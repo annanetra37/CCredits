@@ -73,6 +73,7 @@ def sync_parameters() -> None:
         ("zero_day_policy", None, settings.zero_day_policy),
         ("missing_day_policy", None, settings.missing_day_policy),
         ("trust_grid_connection_date", None, str(settings.trust_grid_connection_date).lower()),
+        ("show_real_site_names", None, str(settings.show_real_site_names).lower()),
     ]
     with connection() as conn, conn.cursor() as cur:
         for key, num, txt in rows:
@@ -105,14 +106,6 @@ def seed_reference_data() -> None:
                 (settings.default_vcu_price, settings.price_currency,
                  settings.vcu_price_source or "Supplied by configuration"),
             )
-        cur.execute(
-            """
-            INSERT INTO silver.parameter (key, num, txt) VALUES (%s, NULL, %s)
-            ON CONFLICT (key) DO UPDATE SET txt = EXCLUDED.txt, updated_at = now()
-            """,
-            ("allow_expired_emission_factor",
-             str(settings.allow_expired_emission_factor).lower()),
-        )
         conn.commit()
 
 
@@ -133,9 +126,12 @@ ASB0038_SOURCE = (
     "CDM Standardized Baseline ASB0038-2018 v01.0, Table 1 — "
     "Grid emission factor for the electricity system of the Republic of Armenia for 2016"
 )
-ASB0038_URL = "https://cdm.unfccc.int/methodologies/standard_base/index.html"
+ASB0038_URL = "https://environment.gov.am/api/assets/7e4407a1-eac6-4aed-bc8e-3ce5e1256a40"
 ASB0038_VALID_FROM = "2018-02-19"
-ASB0038_VALID_TO = "2021-02-18"
+# What the document itself says. The factor is still applied after this
+# date — it is the most recent approved baseline for Armenia — and the
+# portal shows both dates so the difference is never hidden.
+ASB0038_PUBLISHED_VALID_TO = "2021-02-18"
 
 # (value, factor_type, project_types, active)
 ASB0038_ROWS = [
@@ -157,14 +153,16 @@ ASB0038_ROWS = [
 
 def _seed_armenia_baseline(cur) -> None:
     """Load Table 1 as published. An operator-supplied factor overrides it."""
+    verified_by = settings.emission_factor_verified_by or None
     if settings.default_emission_factor > 0:
         cur.execute(
             """
             INSERT INTO gold.emission_factor
                 (value_tco2e_per_mwh, factor_type, project_types, source, source_url,
-                 vintage, valid_from, valid_to, active, verified)
+                 vintage, valid_from, valid_to, published_valid_to, active,
+                 verified, verified_by, verified_at)
             VALUES (%s, 'combined_margin', 'Supplied by configuration', %s, %s, %s,
-                    %s, NULL, true, false)
+                    %s, NULL, NULL, true, %s, %s, CASE WHEN %s THEN now() END)
             """,
             (
                 settings.default_emission_factor,
@@ -172,20 +170,24 @@ def _seed_armenia_baseline(cur) -> None:
                 settings.default_emission_factor_url or None,
                 settings.default_emission_factor_vintage,
                 settings.emission_factor_valid_from or ASB0038_VALID_FROM,
+                bool(verified_by), verified_by, bool(verified_by),
             ),
         )
         return
 
-    valid_to = settings.emission_factor_valid_to or ASB0038_VALID_TO
     for value, factor_type, project_types, active in ASB0038_ROWS:
         cur.execute(
             """
             INSERT INTO gold.emission_factor
                 (value_tco2e_per_mwh, factor_type, project_types, source, source_url,
-                 vintage, valid_from, valid_to, active, verified)
-            VALUES (%s, %s, %s, %s, %s, '2016', %s, %s, %s, false)
+                 vintage, valid_from, valid_to, published_valid_to, active,
+                 verified, verified_by, verified_at)
+            VALUES (%s, %s, %s, %s, %s, '2016', %s, NULL, %s, %s,
+                    %s, %s, CASE WHEN %s THEN now() END)
             ON CONFLICT DO NOTHING
             """,
             (value, factor_type, project_types, ASB0038_SOURCE, ASB0038_URL,
-             ASB0038_VALID_FROM, valid_to, active),
+             ASB0038_VALID_FROM, ASB0038_PUBLISHED_VALID_TO, active,
+             bool(verified_by) and active, verified_by if active else None,
+             bool(verified_by) and active),
         )

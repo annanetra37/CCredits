@@ -378,3 +378,47 @@ button.ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
     color: var(--eligible-ink); border-radius: var(--radius-sm);
     padding: 10px 13px; font-size: 12.5px; font-weight: 600; line-height: 1.5;
 }
+
+/* --- Toolbar and segmented control (Energy screen) --- */
+.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.toolbar-label { font-size: 11.5px; font-weight: 650; color: var(--ink-3);
+                 text-transform: uppercase; letter-spacing: .06em; }
+.segmented { display: inline-flex; gap: 3px; background: var(--surface-3);
+             padding: 3px; border-radius: 10px; }
+.segmented button {
+    background: transparent; border: none; color: var(--ink-2); font: inherit;
+    font-size: 12.5px; font-weight: 550; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+    transition: background .15s var(--ease), color .15s var(--ease);
+}
+.segmented button:hover { color: var(--ink); background: rgba(255,255,255,.7); }
+.segmented button.active { background: var(--surface); color: var(--ink);
+                           box-shadow: 0 1px 2px rgba(11,11,11,.08); }
+select {
+    font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
+}
+select:hover { border-color: var(--accent); }
+
+/* --- Coverage cell: a share, not an alarming word --- */
+.cov { display: flex; align-items: center; gap: 9px; justify-content: flex-end; }
+.cov-pct { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 34px; text-align: right; }
+.cov .bar { width: 62px; height: 6px; flex: none; }
+
+/* --- The two inputs that turn energy into credits --- */
+.input-card {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 15px 16px; margin-bottom: 13px; background: var(--surface-2);
+}
+.input-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.input-label { font-size: 11.5px; font-weight: 650; color: var(--ink-3);
+               text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }
+.input-value { font-size: 25px; font-weight: 680; letter-spacing: -.03em; color: var(--ink); }
+.input-unit { font-size: 13px; font-weight: 500; color: var(--ink-3); letter-spacing: 0; margin-left: 5px; }
+.input-why { font-size: 12.5px; color: var(--ink-2); margin-top: 10px; line-height: 1.55; }
+.input-src { font-size: 11.5px; color: var(--ink-3); margin-top: 9px; line-height: 1.5; }
+.input-src a { color: var(--accent-ink); }
+details.more { margin-top: 6px; }
+details.more summary {
+    cursor: pointer; font-size: 12.5px; color: var(--accent-ink); font-weight: 550; padding: 7px 0;
+}
+details.more summary:hover { text-decoration: underline; }

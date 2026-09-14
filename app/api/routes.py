@@ -18,26 +18,34 @@ router = APIRouter(prefix="/api")
 
 
 def _factor_warning(carbon: dict) -> str | None:
-    """Say plainly why a carbon figure cannot be relied on, if it cannot."""
+    """Say plainly what a reader should know about this carbon figure."""
     if carbon.get("emission_factor") is None:
         return (
-            "No emission factor applies to this period, so no reduction is claimed. "
-            "Either the loaded months fall outside the published validity of the "
-            "baseline on file, or no factor has been entered."
+            "No emission factor is on file, so no emission reduction and no VCUs "
+            "are claimed. Nothing stands in for it."
         )
-    if carbon.get("factor_expired"):
-        return (
-            "The emission factor is being applied outside its published validity "
-            f"(the baseline lapsed on {carbon.get('factor_valid_to')}). It is shown "
-            "because ALLOW_EXPIRED_EMISSION_FACTOR is on. A verifier will ask for a "
-            "baseline that covers the crediting period."
+    notes = []
+    if carbon.get("factor_beyond_validity"):
+        notes.append(
+            "This is the most recent approved grid factor for Armenia, and it is "
+            "applied to months after the publication's own stated validity "
+            f"({carbon.get('factor_published_valid_to')}). A verifier will want a "
+            "successor baseline once one is approved."
         )
     if not carbon.get("factor_verified"):
-        return (
-            "The emission factor is unverified — nobody has checked it against the "
-            "source document. This figure is not defensible until they have."
+        notes.append(
+            "Nobody has signed off that this factor was checked against the source "
+            "document. Set EMISSION_FACTOR_VERIFIED_BY to record who did."
         )
-    return None
+    return " ".join(notes) or None
+
+
+# How a site is named on screen. A pseudonym by default: opening the portal
+# should not disclose which client a site belongs to.
+SITE_LABEL = (
+    "s.plant_name" if settings.show_real_site_names
+    else "COALESCE(s.site_code, 'SITE-' || upper(substr(md5(s.plant_name), 1, 6)))"
+)
 
 
 def require_token(x_admin_token: str | None = Header(default=None)) -> None:
@@ -87,6 +95,7 @@ def context() -> dict:
         "banner": settings.banner_text,
         "fleet_name": settings.fleet_name,
         "env": settings.app_env,
+        "real_names": settings.show_real_site_names,
         "assumptions": assumptions,
         "emission_factors": query(
             "SELECT * FROM gold.emission_factor ORDER BY valid_from DESC"
@@ -154,7 +163,10 @@ def drill_months() -> list[dict]:
         """
         SELECT f.month,
                f.generation_kwh, f.eligible_kwh, f.excluded_kwh,
-               f.site_count, f.days_missing, f.days_suspect, f.worst_flag,
+               f.site_count, f.days_expected, f.days_missing, f.days_suspect, f.worst_flag,
+               CASE WHEN f.days_expected > 0
+                    THEN 100.0 * (f.days_expected - f.days_missing) / f.days_expected
+                    ELSE 0 END AS coverage_pct,
                COALESCE(g.vcu_issued, 0)           AS vcu_issued,
                COALESCE(g.net_reduction_tco2e, 0)  AS net_reduction_tco2e,
                COALESCE(g.total_revenue, 0)        AS total_revenue
@@ -177,14 +189,17 @@ def drill_months() -> list[dict]:
 def drill_sites(month: dt.date) -> list[dict]:
     return query(
         """
-        SELECT sm.plant_name, sm.generation_kwh, sm.eligible_kwh, sm.excluded_kwh,
+        SELECT i.label AS site, i.site_code, i.region, i.installed_kwp,
+               sm.generation_kwh, sm.eligible_kwh, sm.excluded_kwh,
                sm.days_expected, sm.days_with_data, sm.days_missing,
                sm.days_suspect, sm.worst_flag,
+               CASE WHEN sm.days_expected > 0
+                    THEN 100.0 * (sm.days_expected - sm.days_missing) / sm.days_expected
+                    ELSE 0 END AS coverage_pct,
                COALESCE(g.vcu_issued, 0)          AS vcu_issued,
-               COALESCE(g.net_reduction_tco2e, 0) AS net_reduction_tco2e,
-               s.installed_kwp
+               COALESCE(g.net_reduction_tco2e, 0) AS net_reduction_tco2e
         FROM silver.site_month sm
-        JOIN bronze.site s ON s.plant_name = sm.plant_name
+        JOIN silver.site_identity i ON i.plant_name = sm.plant_name
         LEFT JOIN gold.revenue g
                ON g.plant_name = sm.plant_name AND g.month = sm.month
         WHERE sm.month = %s
@@ -194,8 +209,20 @@ def drill_sites(month: dt.date) -> list[dict]:
     )
 
 
-@router.get("/drill/sites/{plant_name}/days")
-def drill_days(plant_name: str, month: dt.date | None = None) -> list[dict]:
+def _plant_for(site_code: str) -> str:
+    """Resolve a pseudonym back to the real key. The code never leaves the URL."""
+    row = query_one(
+        "SELECT plant_name FROM silver.site_identity WHERE site_code = %s OR plant_name = %s",
+        (site_code, site_code),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="No such site")
+    return row["plant_name"]
+
+
+@router.get("/drill/sites/{site_code}/days")
+def drill_days(site_code: str, month: dt.date | None = None) -> list[dict]:
+    plant_name = _plant_for(site_code)
     return query(
         """
         SELECT e.reading_date, e.generation_kwh, e.eligible_kwh, e.excluded_kwh,
@@ -214,9 +241,10 @@ def drill_days(plant_name: str, month: dt.date | None = None) -> list[dict]:
     )
 
 
-@router.get("/drill/sites/{plant_name}/days/{day}/readings")
-def drill_readings(plant_name: str, day: dt.date) -> dict:
+@router.get("/drill/sites/{site_code}/days/{day}/readings")
+def drill_readings(site_code: str, day: dt.date) -> dict:
     """The bottom of the drill: the actual cells, with file, hash, row, column."""
+    plant_name = _plant_for(site_code)
     rows = query(
         """
         SELECT r.reading_id, r.device_sn, r.metric, r.metric_label, r.value, r.unit,
@@ -232,7 +260,7 @@ def drill_readings(plant_name: str, day: dt.date) -> dict:
         """,
         (plant_name, day),
     )
-    return {"plant_name": plant_name, "reading_date": day.isoformat(), "readings": rows}
+    return {"site_code": site_code, "reading_date": day.isoformat(), "readings": rows}
 
 
 # --- 4.4 Lineage -----------------------------------------------------------
@@ -248,7 +276,7 @@ def lineage(
         """
         SELECT v.plant_name, v.month, v.eligible_kwh, v.eligible_mwh, v.vcu_issued,
                v.carry_in_tco2e, v.carry_forward_tco2e, v.net_reduction_tco2e,
-               v.emission_factor, v.factor_verified, v.factor_expired,
+               v.emission_factor, v.factor_verified, v.factor_beyond_validity,
                c.factor_source, c.factor_source_url, c.factor_vintage,
                c.factor_valid_from, c.factor_valid_to, c.factor_project_types,
                r.total_revenue, r.currency
@@ -290,7 +318,18 @@ def lineage(
 
 @router.get("/fleet")
 def fleet() -> list[dict]:
-    return query("SELECT * FROM gold.fleet_table ORDER BY plant_name")
+    return query(
+        """
+        SELECT i.label AS site, i.site_code, i.region, i.country, i.address,
+               i.plant_type, f.installed_kwp, f.grid_connection_date, f.plant_status,
+               f.days_expected, f.days_covered, f.days_missing, f.days_suspect,
+               f.generation_kwh, f.eligible_kwh, f.specific_yield_per_day,
+               f.quality_score, f.vcu_issued, f.net_reduction_tco2e
+        FROM gold.fleet_table f
+        JOIN silver.site_identity i ON i.plant_name = f.plant_name
+        ORDER BY i.label
+        """
+    )
 
 
 # --- 5.5 Calculation panel -------------------------------------------------
@@ -338,7 +377,7 @@ def calculation(month: dt.date | None = None) -> dict:
                MAX(factor_project_types) AS factor_project_types,
                MAX(factor_valid_to)  AS factor_valid_to,
                bool_and(COALESCE(factor_verified, false)) AS factor_verified,
-               bool_or(COALESCE(factor_expired, false))   AS factor_expired,
+               bool_or(COALESCE(factor_beyond_validity, false))   AS factor_beyond_validity,
                count(*) FILTER (WHERE emission_factor IS NULL) AS months_without_factor
         FROM gold.carbon WHERE (%s::date IS NULL OR month = %s)
         """,
@@ -437,24 +476,29 @@ def quality() -> dict:
     ) or {}
     gaps = query(
         """
-        SELECT plant_name, MIN(reading_date) AS gap_start, MAX(reading_date) AS gap_end,
+        SELECT i.label AS site, i.site_code, i.region,
+               MIN(runs.reading_date) AS gap_start, MAX(runs.reading_date) AS gap_end,
                COUNT(*) AS days
         FROM (
             SELECT plant_name, reading_date,
                    reading_date - (ROW_NUMBER() OVER (PARTITION BY plant_name ORDER BY reading_date))::int AS grp
             FROM silver.quality_flag WHERE flag = 'missing'
         ) runs
-        GROUP BY plant_name, grp
-        ORDER BY days DESC, plant_name
+        JOIN silver.site_identity i ON i.plant_name = runs.plant_name
+        GROUP BY i.label, i.site_code, i.region, runs.grp
+        ORDER BY days DESC, i.label
         """
     )
     suspects = query(
         """
-        SELECT plant_name, reading_date, generation_kwh, specific_yield, flag_reason,
-               is_zero, is_implausible, is_duplicate, is_negative
-        FROM silver.quality_flag
-        WHERE flag = 'suspect'
-        ORDER BY reading_date, plant_name
+        SELECT i.label AS site, i.site_code, q.reading_date, q.generation_kwh,
+               q.specific_yield, q.flag_reason,
+               q.is_zero, q.is_implausible, q.is_duplicate, q.is_negative
+        FROM silver.quality_flag q
+        JOIN silver.site_identity i ON i.plant_name = q.plant_name
+        WHERE q.flag = 'suspect'
+        ORDER BY q.reading_date, i.label
+        LIMIT 500
         """
     )
     rules = query_one("SELECT * FROM silver.rules") or {}
@@ -479,6 +523,100 @@ def quality() -> dict:
         ),
         "superseded_count": (query_one("SELECT COUNT(*) AS n FROM silver.superseded_site_day") or {}).get("n", 0),
     }
+
+
+# --- Energy browser --------------------------------------------------------
+
+@router.get("/energy")
+def energy(
+    group: str = Query("month", pattern="^(month|day|site|region)$"),
+    site: str | None = None,
+    month: dt.date | None = None,
+) -> dict:
+    """Energy generated, grouped the way the reader wants to see it.
+
+    One endpoint rather than four: the grouping is a column choice, and the
+    filters narrow the same underlying site-day rows.
+    """
+    plant = _plant_for(site) if site else None
+    where = "WHERE (%(plant)s::text IS NULL OR e.plant_name = %(plant)s) " \
+            "AND (%(month)s::date IS NULL OR date_trunc('month', e.reading_date)::date = %(month)s)"
+    params = {"plant": plant, "month": month}
+
+    key = {
+        "month": "date_trunc('month', e.reading_date)::date",
+        "day": "e.reading_date",
+        "site": "i.label",
+        "region": "COALESCE(i.region, 'Unknown')",
+    }[group]
+
+    rows = query(
+        f"""
+        WITH base AS (
+            SELECT {key}                       AS bucket,
+                   e.plant_name,
+                   e.generation_kwh, e.eligible_kwh, e.excluded_kwh, e.flag,
+                   i.installed_kwp
+            FROM silver.eligibility e
+            JOIN silver.site_identity i ON i.plant_name = e.plant_name
+            {where}
+        ),
+        -- Capacity is a property of a site, so it is summed over the distinct
+        -- sites in a bucket, never over its site-days.
+        caps AS (
+            SELECT bucket, SUM(installed_kwp) AS installed_kwp
+            FROM (SELECT DISTINCT bucket, plant_name, installed_kwp FROM base) d
+            GROUP BY bucket
+        )
+        SELECT b.bucket::text                                  AS bucket,
+               SUM(b.generation_kwh)                           AS generation_kwh,
+               SUM(b.eligible_kwh)                             AS eligible_kwh,
+               SUM(b.excluded_kwh)                             AS excluded_kwh,
+               COUNT(*)                                        AS site_days,
+               COUNT(*) FILTER (WHERE b.flag = 'missing')      AS days_missing,
+               COUNT(*) FILTER (WHERE b.flag = 'suspect')      AS days_suspect,
+               COUNT(DISTINCT b.plant_name)                    AS site_count,
+               c.installed_kwp,
+               -- kWh per kWp per day, weighted by capacity: the denominator
+               -- sums each site's kWp once per day it actually reported, which
+               -- is exactly capacity x days-with-data.
+               CASE WHEN SUM(b.installed_kwp) FILTER (WHERE b.flag <> 'missing') > 0
+                    THEN SUM(b.generation_kwh)
+                         / SUM(b.installed_kwp) FILTER (WHERE b.flag <> 'missing')
+               END                                             AS specific_yield_per_day,
+               CASE WHEN COUNT(*) > 0
+                    THEN 100.0 * COUNT(*) FILTER (WHERE b.flag <> 'missing') / COUNT(*)
+                    ELSE 0 END                                 AS coverage_pct
+        FROM base b
+        LEFT JOIN caps c ON c.bucket = b.bucket
+        GROUP BY b.bucket, c.installed_kwp
+        ORDER BY 1
+        """,
+        params,
+    )
+    totals = query_one(
+        f"""
+        SELECT COALESCE(SUM(e.generation_kwh), 0) AS generation_kwh,
+               COALESCE(SUM(e.eligible_kwh), 0)   AS eligible_kwh,
+               COALESCE(SUM(e.excluded_kwh), 0)   AS excluded_kwh,
+               COUNT(DISTINCT e.plant_name)       AS site_count
+        FROM silver.eligibility e
+        JOIN silver.site_identity i ON i.plant_name = e.plant_name
+        {where}
+        """,
+        params,
+    ) or {}
+    capacity = query_one(
+        """
+        SELECT COALESCE(SUM(installed_kwp), 0) AS installed_kwp,
+               COUNT(*) FILTER (WHERE installed_kwp IS NULL) AS sites_without_capacity
+        FROM silver.site_identity
+        WHERE (%(plant)s::text IS NULL OR plant_name = %(plant)s)
+        """,
+        params,
+    ) or {}
+    return {"group": group, "rows": rows, "totals": {**totals, **capacity},
+            "site": site, "month": month.isoformat() if month else None}
 
 
 # --- Reconciliation --------------------------------------------------------

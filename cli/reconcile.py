@@ -414,8 +414,8 @@ def check_factor_coverage() -> Check:
         "WHERE active ORDER BY valid_from DESC LIMIT 1"
     )
     if active:
-        why = (f"the only active factor ({active['v']} tCO2e/MWh) is published valid "
-               f"{active['valid_from']} to {active['valid_to'] or 'open'}")
+        why = (f"the only active factor ({active['v']} tCO2e/MWh) applies "
+               f"{active['valid_from']} to {active['valid_to'] or 'open-ended'}")
     else:
         why = "no factor is marked active"
     kwh = sum((D(r["kwh"]) for r in uncovered), Decimal(0))

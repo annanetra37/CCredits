@@ -12,8 +12,12 @@ CREATE TABLE IF NOT EXISTS gold.emission_factor (
     source_url    text,
     project_types text,                   -- who the published row is applicable to
     vintage       text NOT NULL,
+    -- valid_from / valid_to are the window this factor is APPLIED over.
+    -- published_valid_to is what the source document itself says, kept so the
+    -- two can differ visibly rather than silently.
     valid_from    date NOT NULL,
     valid_to      date,
+    published_valid_to date,
     -- Table 1 of a standardized baseline publishes several factors. Only one
     -- applies to this fleet; the rest are recorded so a verifier can see that
     -- they were considered rather than missed.
@@ -34,6 +38,7 @@ ALTER TABLE gold.emission_factor DROP CONSTRAINT IF EXISTS emission_factor_facto
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS source_url    text;
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS project_types text;
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS active        boolean NOT NULL DEFAULT false;
+ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS published_valid_to date;
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified    boolean NOT NULL DEFAULT false;
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified_by text;
 ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified_at timestamptz;
@@ -48,52 +53,91 @@ CREATE TABLE IF NOT EXISTS gold.price (
     UNIQUE (instrument, as_of)
 );
 
--- 4.1 The emission factor that applies to a month.
---
--- A standardized baseline is published with a validity window. If the loaded
--- period falls outside it there is no applicable factor, and by default this
--- view returns none rather than reaching for a lapsed one — no carbon number
--- is better than an indefensible carbon number. Setting the allow-expired
--- parameter applies the lapsed factor and marks it, so every figure derived
--- from it can say so on screen.
+-- Any I-REC rows are left over from an earlier version of this product. VCUs
+-- are the only instrument now, so they are removed rather than left to confuse
+-- someone reading the portal. The constraint is rebuilt to match.
+ALTER TABLE gold.price DROP CONSTRAINT IF EXISTS price_instrument_check;
+DELETE FROM gold.price WHERE instrument <> 'vcu';
+ALTER TABLE gold.price ADD CONSTRAINT price_instrument_check CHECK (instrument = 'vcu');
+
+-- ---------------------------------------------------------------------------
+-- Migrations for databases seeded by an earlier version of this app. The seed
+-- only fills an empty table, so a live deployment would otherwise keep the old
+-- rows and none of the corrections below would ever reach it.
+-- ---------------------------------------------------------------------------
+
+-- 1. The applied window and the publication's own validity used to be the same
+--    column. Separate them: ASB0038-2018 is the most recent approved baseline
+--    for Armenia, so it keeps applying, and what the document says is retained.
+UPDATE gold.emission_factor
+   SET published_valid_to = COALESCE(published_valid_to, valid_to),
+       valid_to = NULL
+ WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
+   AND valid_to IS NOT NULL;
+
+-- 2. Point at the document the client supplied rather than the CDM index page.
+UPDATE gold.emission_factor
+   SET source_url = 'https://environment.gov.am/api/assets/7e4407a1-eac6-4aed-bc8e-3ce5e1256a40'
+ WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
+   AND (source_url IS NULL OR source_url LIKE '%cdm.unfccc.int%');
+
+-- 3. Backfill which projects each published margin applies to, matched on the
+--    published value, so a verifier can see why one row and not another is used.
+UPDATE gold.emission_factor e
+   SET project_types = v.project_types
+  FROM (VALUES
+        (0.4329, 'Wind and solar power generation project activities (first, second and third crediting periods)'),
+        (0.4620, 'All project activities (first, second and third crediting periods)'),
+        (0.3456, 'All project activities (first, second and third crediting periods)'),
+        (0.4038, 'All project activities except wind and solar power generation (first crediting period)'),
+        (0.3748, 'All project activities except wind and solar power generation (second and third crediting periods)')
+       ) AS v(value, project_types)
+ WHERE e.project_types IS NULL
+   AND e.value_tco2e_per_mwh = v.value;
+
+-- 4. Older seeds marked nothing active, or marked several. For a solar fleet
+--    exactly one row applies: the combined margin for wind and solar.
+UPDATE gold.emission_factor
+   SET active = (value_tco2e_per_mwh = 0.4329)
+ WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
+   AND (SELECT COUNT(*) FROM gold.emission_factor WHERE active) <> 1;
+
+-- 5. The VCU price placeholder this app shipped earlier was 8.00 with that
+--    exact source string, so matching it replaces our own placeholder without
+--    touching a price an operator entered deliberately.
+UPDATE gold.price
+   SET value = 3.00,
+       source = 'Indicative pilot pricing — conservative end of the VCU range'
+ WHERE instrument = 'vcu' AND source = 'Indicative pilot pricing';
+
+-- 4.1 The emission factor that applies to a month. A plain date join: the
+-- active factor whose applied window covers the month. Where that window runs
+-- past the document's own published validity, published_valid_to records it
+-- and the portal says so beside every figure — the difference is visible
+-- rather than hidden.
 CREATE OR REPLACE VIEW gold.factor_by_month AS
-WITH months AS (SELECT DISTINCT month FROM silver.site_month),
-allow AS (
-    SELECT COALESCE((SELECT txt FROM silver.parameter
-                     WHERE key = 'allow_expired_emission_factor'), 'false') = 'true' AS ok
-),
-in_window AS (
-    SELECT DISTINCT ON (m.month) m.month, e.*, false AS expired
-    FROM months m
-    JOIN gold.emission_factor e
-      ON e.active
-     AND e.valid_from <= (m.month + interval '1 month - 1 day')::date
-     AND (e.valid_to IS NULL OR e.valid_to >= m.month)
-    ORDER BY m.month, e.valid_from DESC
-),
-lapsed AS (
-    SELECT DISTINCT ON (m.month) m.month, e.*, true AS expired
-    FROM months m
-    CROSS JOIN allow a
-    JOIN gold.emission_factor e ON e.active
-    WHERE a.ok
-      AND NOT EXISTS (SELECT 1 FROM in_window w WHERE w.month = m.month)
-    ORDER BY m.month, e.valid_to DESC NULLS FIRST, e.valid_from DESC
-)
-SELECT m.month,
-       f.factor_id,
-       f.value_tco2e_per_mwh,
-       f.factor_type,
-       f.project_types,
-       f.source,
-       f.source_url,
-       f.vintage,
-       f.valid_from,
-       f.valid_to,
-       COALESCE(f.verified, false) AS verified,
-       COALESCE(f.expired, false)  AS expired
-FROM months m
-LEFT JOIN (SELECT * FROM in_window UNION ALL SELECT * FROM lapsed) f ON f.month = m.month;
+SELECT DISTINCT ON (m.month)
+       m.month,
+       e.factor_id,
+       e.value_tco2e_per_mwh,
+       e.factor_type,
+       e.project_types,
+       e.source,
+       e.source_url,
+       e.vintage,
+       e.valid_from,
+       e.valid_to,
+       e.published_valid_to,
+       COALESCE(e.verified, false) AS verified,
+       CASE WHEN e.published_valid_to IS NOT NULL
+             AND m.month > e.published_valid_to
+            THEN true ELSE false END AS beyond_published_validity
+FROM (SELECT DISTINCT month FROM silver.site_month) m
+LEFT JOIN gold.emission_factor e
+       ON e.active
+      AND e.valid_from <= (m.month + interval '1 month - 1 day')::date
+      AND (e.valid_to IS NULL OR e.valid_to >= m.month)
+ORDER BY m.month, e.valid_from DESC;
 
 -- 4.2 Eligible MWh x the emission factor, joined on date so the factor's
 -- version travels with the result instead of being baked into it.
@@ -113,8 +157,9 @@ SELECT sm.plant_name,
        ef.vintage                                                 AS factor_vintage,
        ef.valid_from                                              AS factor_valid_from,
        ef.valid_to                                                AS factor_valid_to,
+       ef.published_valid_to                                      AS factor_published_valid_to,
        COALESCE(ef.verified, false)                               AS factor_verified,
-       COALESCE(ef.expired, false)                                AS factor_expired,
+       COALESCE(ef.beyond_published_validity, false)              AS factor_beyond_validity,
        (sm.eligible_kwh / 1000.0) * ef.value_tco2e_per_mwh        AS baseline_emissions_tco2e,
        0::numeric                                                 AS project_emissions_tco2e,
        0::numeric                                                 AS leakage_tco2e,
@@ -136,7 +181,7 @@ WITH running AS (
            worst_flag,
            emission_factor,
            factor_verified,
-           factor_expired,
+           factor_beyond_validity,
            net_reduction_tco2e,
            SUM(COALESCE(net_reduction_tco2e, 0)) OVER (
                PARTITION BY plant_name ORDER BY month
@@ -153,7 +198,7 @@ SELECT plant_name,
        worst_flag,
        emission_factor,
        factor_verified,
-       factor_expired,
+       factor_beyond_validity,
        net_reduction_tco2e,
        cumulative_tco2e,
        cumulative_issued,
@@ -189,7 +234,7 @@ SELECT v.plant_name,
        v.net_reduction_tco2e,
        v.carry_forward_tco2e,
        v.factor_verified,
-       v.factor_expired,
+       v.factor_beyond_validity,
        p.vcu_price_per_tco2e,
        p.currency,
        p.vcu_price_as_of,
@@ -209,7 +254,7 @@ WITH energy AS (
     FROM silver.site_month
 ), ledger AS (
     SELECT plant_name, month, vcu_issued, carry_forward_tco2e, net_reduction_tco2e,
-           factor_verified, factor_expired,
+           factor_verified, factor_beyond_validity,
            ROW_NUMBER() OVER (PARTITION BY plant_name ORDER BY month DESC) AS recency
     FROM gold.vcu
 ), money AS (
@@ -218,6 +263,8 @@ WITH energy AS (
 )
 SELECT (SELECT COUNT(*) FROM bronze.site)        AS site_count,
        (SELECT COUNT(*) FROM bronze.source_file) AS file_count,
+       (SELECT COALESCE(SUM(installed_kwp), 0) FROM bronze.site)          AS installed_kwp,
+       (SELECT COUNT(*) FROM bronze.site WHERE installed_kwp IS NULL)     AS sites_without_capacity,
        w.window_start,
        w.window_end,
        e.generation_kwh,
@@ -227,7 +274,7 @@ SELECT (SELECT COUNT(*) FROM bronze.site)        AS site_count,
        COALESCE((SELECT SUM(carry_forward_tco2e) FROM ledger WHERE recency = 1), 0) AS carry_forward_tco2e,
        (SELECT SUM(net_reduction_tco2e) FROM ledger)                              AS net_reduction_tco2e,
        COALESCE((SELECT bool_and(factor_verified) FROM ledger), false)            AS factor_verified,
-       COALESCE((SELECT bool_or(factor_expired)  FROM ledger), false)             AS factor_expired,
+       COALESCE((SELECT bool_or(factor_beyond_validity)  FROM ledger), false)             AS factor_beyond_validity,
        m.total_revenue,
        COALESCE(m.currency, 'USD')               AS currency
 FROM energy e

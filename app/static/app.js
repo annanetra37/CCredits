@@ -15,6 +15,26 @@ const monthName = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US
 const dayName = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
 const pill = (flag) => `<span class="pill ${esc(flag)}">${esc(flag)}</span>`;
 
+// A month is almost never wholly clean across a large fleet, so a bare
+// "missing" badge said nothing useful. Show how much of it is covered instead,
+// with the shortfall visible rather than named.
+const coverageCell = (row) => {
+    const expected = num(row.days_expected) || num(row.site_days) || 0;
+    const missing = num(row.days_missing), suspect = num(row.days_suspect);
+    const pct = row.coverage_pct !== undefined && row.coverage_pct !== null
+        ? num(row.coverage_pct)
+        : (expected ? 100 * (expected - missing) / expected : 0);
+    const ok = Math.max(expected - missing - suspect, 0);
+    const w = (n) => expected ? (100 * n / expected) : 0;
+    return `<div class="cov">
+        <span class="cov-pct">${fmt(pct, 0)}%</span>
+        <span class="bar" title="${fmt(ok)} ok · ${fmt(suspect)} suspect · ${fmt(missing)} missing">
+            <i class="ok" style="width:${w(ok)}%"></i>
+            <i class="suspect" style="width:${w(suspect)}%"></i>
+            <i class="missing" style="width:${w(missing)}%"></i>
+        </span></div>`;
+};
+
 const busy = (id, cols) => {
     const node = el(id);
     node.innerHTML = node.tagName === 'TABLE'
@@ -60,6 +80,7 @@ document.querySelectorAll('nav button').forEach((b) => {
         document.querySelectorAll('.screen').forEach((x) => x.classList.remove('active'));
         b.classList.add('active');
         el('screen-' + b.dataset.screen).classList.add('active');
+        if (b.dataset.screen === 'energy') loadEnergy();
         if (b.dataset.screen === 'fleet') loadFleet();
         if (b.dataset.screen === 'quality') loadQuality();
         if (b.dataset.screen === 'upload') loadFiles();
@@ -180,7 +201,11 @@ async function loadOverview() {
         ['Emission reduction', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tCO₂e', 'Eligible MWh × emission factor'],
         ['VCUs issuable', fmt(summary.vcu_issued), '', `${fmt(summary.carry_forward_tco2e, 3)} tCO₂e carried forward`],
         ['Indicative revenue', `${cur} ${fmt(summary.total_revenue, 0)}`, '', 'VCUs at the reference price below'],
-        ['Coverage', fmt(summary.coverage_pct, 1), '%', `${fmt(summary.days_missing)} of ${fmt(summary.site_days)} site-days missing`],
+        ['Installed capacity', fmt(summary.installed_kwp, 0), 'kWp',
+            summary.sites_without_capacity
+                ? `across ${summary.site_count} sites · ${summary.sites_without_capacity} with no capacity on file`
+                : `across ${summary.site_count} sites`],
+        ['Data coverage', fmt(summary.coverage_pct, 1), '%', `${fmt(summary.days_missing)} of ${fmt(summary.site_days)} site-days have no reading`],
     ].map(([label, value, unit, foot], i) => `
         <div class="kpi-card clickable" data-open="months"
              style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
@@ -217,7 +242,7 @@ async function loadOverview() {
         <thead><tr>
             <th>Month</th><th class="num">Generated kWh</th><th class="num">Eligible kWh</th>
             <th class="num">Excluded kWh</th><th class="num">tCO₂e</th><th class="num">VCU</th>
-            <th class="num">Revenue</th><th>Quality</th>
+            <th class="num">Revenue</th><th class="num">Coverage</th>
         </tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
@@ -228,7 +253,7 @@ async function loadOverview() {
                 <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
                 <td class="num">${fmt(m.vcu_issued)}</td>
                 <td class="num">${cur} ${fmt(m.total_revenue, 0)}</td>
-                <td>${pill(m.worst_flag)}</td>
+                <td class="num">${coverageCell(m)}</td>
             </tr>`).join('') || `<tr><td colspan="8" class="empty">No data loaded yet.</td></tr>`}
         </tbody>`;
     el('monthsTable').querySelectorAll('[data-month]').forEach((tr) => {
@@ -248,33 +273,145 @@ function renderContext() {
             <div class="a-env">${esc(a.env)}</div>
         </div>`).join('');
 
-    const factors = CONTEXT.emission_factors.map((f) => `
-        <tr${f.active ? '' : ' style="opacity:.62"'}>
-            <td>${esc(f.factor_type.replace(/_/g, ' '))}
-                ${f.active ? '<span class="pill info">applied</span>' : '<span class="pill grey">reference</span>'}</td>
-            <td class="num">${esc(String(f.value_tco2e_per_mwh))}</td>
-            <td>${esc(f.valid_from)} → ${esc(f.valid_to || 'open')}</td>
-            <td>${f.verified
-                ? `<span class="pill ok">verified</span>`
-                : `<span class="pill missing">unverified</span>`}</td></tr>
-        <tr><td colspan="4" class="src-note">${esc(f.project_types || '')}<br>${esc(f.source)}</td></tr>`).join('')
-        || `<tr><td colspan="4" class="empty">No emission factor on file. No reduction is claimed.</td></tr>`;
-    const prices = CONTEXT.prices.map((p) => `
-        <tr><td>${esc(p.instrument.toUpperCase())}</td><td class="num">${esc(String(p.value))} ${esc(p.currency)}</td>
-            <td>${esc(p.as_of)}</td><td>${esc(p.source || '')}</td></tr>`).join('')
-        || `<tr><td colspan="4" class="empty">No VCU price set, so no revenue is shown.</td></tr>`;
-    el('reference').innerHTML = `
-        <h3>Emission factors</h3>
-        <div class="scroll"><table><thead><tr><th>Margin</th><th class="num">tCO₂e/MWh</th><th>Published validity</th><th>Checked</th></tr></thead>
-        <tbody>${factors}</tbody></table></div>
-        <h3 style="margin-top:16px">Prices</h3>
-        <div class="scroll"><table><thead><tr><th>Instrument</th><th class="num">Price</th><th>As of</th><th>Source</th></tr></thead>
-        <tbody>${prices}</tbody></table></div>`;
+    const active = (CONTEXT.emission_factors || []).find((f) => f.active);
+    const others = (CONTEXT.emission_factors || []).filter((f) => !f.active);
+    const price = (CONTEXT.prices || [])[0];
+
+    const factorBlock = active ? `
+        <div class="input-card">
+            <div class="input-head">
+                <div>
+                    <div class="input-label">Grid emission factor</div>
+                    <div class="input-value">${esc(String(active.value_tco2e_per_mwh))}
+                        <span class="input-unit">tCO₂e per MWh</span></div>
+                </div>
+                ${active.verified
+                    ? '<span class="pill ok">checked</span>'
+                    : '<span class="pill missing">not yet checked</span>'}
+            </div>
+            <div class="input-why">Every MWh of solar generated displaces a MWh the Armenian grid
+                would otherwise have supplied. This is how much CO₂ that MWh would have emitted —
+                which is what makes the generation worth a credit.</div>
+            <div class="input-src">
+                ${esc(active.source)}<br>
+                Applies to: ${esc(active.project_types || '—')}<br>
+                ${active.published_valid_to
+                    ? `Publication's stated validity ends ${esc(active.published_valid_to)}; applied beyond it as the most recent approved baseline for Armenia.`
+                    : ''}
+                ${active.source_url
+                    ? `<br><a href="${esc(active.source_url)}" target="_blank" rel="noopener">View the source document</a>`
+                    : ''}
+            </div>
+        </div>` : `<div class="empty">No emission factor on file, so no credits are claimed.</div>`;
+
+    const priceBlock = price ? `
+        <div class="input-card">
+            <div class="input-head">
+                <div>
+                    <div class="input-label">VCU price</div>
+                    <div class="input-value">${esc(String(Number(price.value)))}
+                        <span class="input-unit">${esc(price.currency)} per tonne</span></div>
+                </div>
+                <span class="pill grey">indicative</span>
+            </div>
+            <div class="input-why">One VCU is one tonne of CO₂ avoided. This is what a tonne is
+                assumed to sell for, and it only affects the revenue figure — never the number
+                of credits.</div>
+            <div class="input-src">${esc(price.source || '')} · as of ${esc(price.as_of)}</div>
+        </div>` : `<div class="empty">No VCU price set, so no revenue is shown.</div>`;
+
+    const otherBlock = others.length ? `
+        <details class="more">
+            <summary>The other margins published in the same table (${others.length})</summary>
+            <div class="scroll"><table><thead><tr><th>Margin</th><th class="num">tCO₂e/MWh</th>
+                <th>Applies to</th></tr></thead><tbody>${others.map((f) => `
+                <tr><td>${esc(f.factor_type.replace(/_/g, ' '))}</td>
+                    <td class="num">${esc(String(f.value_tco2e_per_mwh))}</td>
+                    <td>${esc(f.project_types || '')}</td></tr>`).join('')}
+            </tbody></table></div>
+            <div class="input-src" style="margin-top:8px">Recorded so it is visible that they were
+                considered. Only the one above is applied — it is the row for solar generation.</div>
+        </details>` : '';
+
+    el('reference').innerHTML = factorBlock + priceBlock + otherBlock;
+}
+
+/* ------------------------------------------------------- Energy browser */
+
+let energyGroup = 'month', energySite = '';
+
+document.querySelectorAll('#energyGroup button').forEach((b) => {
+    b.onclick = () => {
+        document.querySelectorAll('#energyGroup button').forEach((x) => x.classList.remove('active'));
+        b.classList.add('active');
+        energyGroup = b.dataset.group;
+        loadEnergy();
+    };
+});
+el('energySite').onchange = () => { energySite = el('energySite').value; loadEnergy(); };
+
+const BUCKET_LABEL = {
+    month: (v) => monthName(v),
+    day: (v) => dayName(v),
+    site: (v) => v,
+    region: (v) => v,
+};
+
+async function loadEnergy() {
+    busy('energyKpis'); busy('energyTable', 8);
+    let d;
+    try {
+        d = await api(`/api/energy?group=${energyGroup}` + (energySite ? `&site=${encodeURIComponent(energySite)}` : ''));
+    } catch (err) { failed('energyKpis', err); return failed('energyTable', err, 8); }
+
+    // Populate the site filter once.
+    const sel = el('energySite');
+    if (sel.options.length <= 1) {
+        try {
+            const sites = await api('/api/fleet');
+            sites.forEach((s) => sel.add(new Option(s.site, s.site_code)));
+        } catch { /* the filter is a convenience; the table still works */ }
+    }
+
+    const t = d.totals || {};
+    el('energyKpis').innerHTML = [
+        ['Energy generated', fmt(t.generation_kwh), 'kWh', `${t.site_count || 0} site(s) in view`],
+        ['Eligible energy', fmt(t.eligible_kwh), 'kWh', `${fmt(t.excluded_kwh)} kWh excluded with a reason`],
+        ['Installed capacity', fmt(t.installed_kwp, 0), 'kWp', t.sites_without_capacity
+            ? `${t.sites_without_capacity} site(s) have no capacity on file`
+            : 'from the plant information columns'],
+    ].map(([label, value, unit, foot], i) => `
+        <div class="kpi-card" style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
+            <div class="label">${label}</div>
+            <div class="value">${value}<span class="unit">${unit}</span></div>
+            <div class="foot">${foot}</div>
+        </div>`).join('');
+
+    const head = { month: 'Month', day: 'Day', site: 'Site', region: 'Region' }[d.group];
+    const label = BUCKET_LABEL[d.group];
+    el('energyTable').innerHTML = `
+        <thead><tr>
+            <th>${head}</th><th class="num">Generated kWh</th><th class="num">Eligible kWh</th>
+            <th class="num">Excluded kWh</th><th class="num">kWp</th>
+            <th class="num">kWh/kWp/day</th><th class="num">Sites</th><th class="num">Coverage</th>
+        </tr></thead>
+        <tbody>${(d.rows || []).map((r) => `
+            <tr${d.group === 'site' ? ' class="clickable" data-site="' + esc(r.bucket) + '"' : ''}>
+                <td>${esc(label(r.bucket))}</td>
+                <td class="num">${fmt(r.generation_kwh)}</td>
+                <td class="num">${fmt(r.eligible_kwh)}</td>
+                <td class="num">${fmt(r.excluded_kwh)}</td>
+                <td class="num">${r.installed_kwp === null ? '—' : fmt(r.installed_kwp, 0)}</td>
+                <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
+                <td class="num">${fmt(r.site_count)}</td>
+                <td class="num">${coverageCell({ ...r, days_expected: r.site_days })}</td>
+            </tr>`).join('') || `<tr><td colspan="8" class="empty">Nothing to show yet.</td></tr>`}
+        </tbody>`;
 }
 
 /* ------------------------------------------------------ 5.4 Fleet table */
 
-let fleetRows = [], fleetSort = { key: 'plant_name', dir: 1 };
+let fleetRows = [], fleetSort = { key: 'site', dir: 1 };
 
 async function loadFleet() {
     busy('fleetTable', 10);
@@ -286,16 +423,19 @@ async function loadFleet() {
 
 function renderFleet() {
     const cols = [
-        ['plant_name', 'Site', 'text'],
+        ['site', 'Site', 'text'],
+        ['region', 'Region', 'text'],
         ['installed_kwp', 'kWp', 'num1'],
         ['grid_connection_date', 'Grid connection', 'text'],
-        ['days_covered', 'Days covered', 'num'],
         ['generation_kwh', 'Total kWh', 'num'],
         ['eligible_kwh', 'Eligible kWh', 'num'],
-        ['specific_yield_per_day', 'Specific yield', 'num2'],
-        ['quality_score', 'Quality', 'score'],
+        ['specific_yield_per_day', 'kWh/kWp/day', 'num2'],
         ['vcu_issued', 'VCU', 'num'],
     ];
+    if (CONTEXT && !CONTEXT.real_names) {
+        el('privacyNote').innerHTML = 'Sites are shown by code rather than by client name. '
+            + 'The codes are stable, so the same site is the same code on every screen.';
+    }
     const rows = [...fleetRows].sort((a, b) => {
         const x = a[fleetSort.key], y = b[fleetSort.key];
         if (x === null) return 1;
@@ -308,18 +448,18 @@ function renderFleet() {
         <thead><tr>${cols.map(([k, label, type]) => `
             <th class="sortable ${type === 'text' ? '' : 'num'}" data-key="${k}">${label}
                 <span class="arrow">${fleetSort.key === k ? (fleetSort.dir > 0 ? '▲' : '▼') : ''}</span></th>`).join('')}
-            <th>Status</th></tr></thead>
+            <th class="num">Coverage</th><th>Status</th></tr></thead>
         <tbody>${rows.map((r) => `
-            <tr class="clickable" data-site="${esc(r.plant_name)}">
-                <td>${esc(r.plant_name)}</td>
+            <tr class="clickable" data-site="${esc(r.site_code)}">
+                <td><strong>${esc(r.site)}</strong></td>
+                <td>${esc(r.region || '—')}</td>
                 <td class="num">${fmt(r.installed_kwp, 1)}</td>
                 <td>${esc(r.grid_connection_date || '—')}</td>
-                <td class="num">${fmt(r.days_covered)} / ${fmt(r.days_expected)}</td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
                 <td class="num">${fmt(r.eligible_kwh)}</td>
                 <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
-                <td class="num">${fmt(r.quality_score, 0)}%</td>
                 <td class="num">${fmt(r.vcu_issued)}</td>
+                <td class="num">${coverageCell(r)}</td>
                 <td>${esc(r.plant_status || '—')}</td>
             </tr>`).join('') || `<tr><td colspan="10" class="empty">No sites yet.</td></tr>`}
         </tbody>`;
@@ -369,8 +509,9 @@ async function loadQuality() {
     el('gapsTable').innerHTML = `
         <thead><tr><th>Site</th><th>From</th><th>To</th><th class="num">Days</th></tr></thead>
         <tbody>${(q.gaps || []).map((g) => `
-            <tr class="clickable" data-site="${esc(g.plant_name)}">
-                <td>${esc(g.plant_name)}</td><td>${dayName(g.gap_start)}</td>
+            <tr class="clickable" data-site="${esc(g.site_code)}">
+                <td><strong>${esc(g.site)}</strong>${g.region ? ` <span class="src-note">${esc(g.region)}</span>` : ''}</td>
+                <td>${dayName(g.gap_start)}</td>
                 <td>${dayName(g.gap_end)}</td><td class="num">${fmt(g.days)}</td>
             </tr>`).join('') || `<tr><td colspan="4" class="empty">No gaps. Every expected site-day has data.</td></tr>`}
         </tbody>`;
@@ -378,8 +519,8 @@ async function loadQuality() {
     el('suspectsTable').innerHTML = `
         <thead><tr><th>Site</th><th>Date</th><th class="num">kWh</th><th>Rule that flagged it</th></tr></thead>
         <tbody>${(q.suspects || []).map((s) => `
-            <tr class="clickable" data-site="${esc(s.plant_name)}">
-                <td>${esc(s.plant_name)}</td><td>${dayName(s.reading_date)}</td>
+            <tr class="clickable" data-site="${esc(s.site_code)}">
+                <td><strong>${esc(s.site)}</strong>${s.region ? ` <span class="src-note">${esc(s.region)}</span>` : ''}</td><td>${dayName(s.reading_date)}</td>
                 <td class="num">${fmt(s.generation_kwh, 1)}</td>
                 <td style="color:var(--amber)">${esc(s.flag_reason || '')}</td>
             </tr>`).join('') || `<tr><td colspan="4" class="empty">No suspect days.</td></tr>`}
@@ -451,16 +592,16 @@ async function openSites(month) {
         <p class="sub">Sites contributing to ${esc(monthName(month))}. Click one to see its days.</p>
         <div class="scroll"><table>
         <thead><tr><th>Site</th><th class="num">Generated</th><th class="num">Eligible</th>
-            <th class="num">Excluded</th><th class="num">VCU</th><th class="num">Days</th><th>Quality</th></tr></thead>
+            <th class="num">Excluded</th><th class="num">VCU</th><th class="num">Days</th><th class="num">Coverage</th></tr></thead>
         <tbody>${sites.map((s) => `
-            <tr class="clickable" data-site="${esc(s.plant_name)}">
-                <td>${esc(s.plant_name)}</td>
+            <tr class="clickable" data-site="${esc(s.site_code)}">
+                <td><strong>${esc(s.site)}</strong>${s.region ? ` <span class="src-note">${esc(s.region)}</span>` : ''}</td>
                 <td class="num">${fmt(s.generation_kwh)}</td>
                 <td class="num">${fmt(s.eligible_kwh)}</td>
                 <td class="num">${fmt(s.excluded_kwh)}</td>
                 <td class="num">${fmt(s.vcu_issued)}</td>
                 <td class="num">${fmt(s.days_with_data)}/${fmt(s.days_expected)}</td>
-                <td>${pill(s.worst_flag)}</td></tr>`).join('')}
+                <td class="num">${coverageCell(s)}</td></tr>`).join('')}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-site]').forEach((tr) => {
         tr.onclick = () => openDays(tr.dataset.site, month);
@@ -536,15 +677,15 @@ async function openReason(reason) {
     if (rows.length) {
         body += `<div class="scroll"><table>
             <thead><tr><th>Site</th><th>Date</th><th class="num">kWh</th><th>Rule</th></tr></thead>
-            <tbody>${rows.map((s) => `<tr class="clickable" data-site="${esc(s.plant_name)}" data-day="${s.reading_date}">
-                <td>${esc(s.plant_name)}</td><td>${dayName(s.reading_date)}</td>
+            <tbody>${rows.map((s) => `<tr class="clickable" data-site="${esc(s.site_code)}" data-day="${s.reading_date}">
+                <td><strong>${esc(s.site)}</strong></td><td>${dayName(s.reading_date)}</td>
                 <td class="num">${fmt(s.generation_kwh, 1)}</td>
-                <td style="color:var(--amber)">${esc(s.flag_reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
+                <td style="color:var(--suspect-ink)">${esc(s.flag_reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
     } else if (gaps.length) {
         body += `<div class="scroll"><table>
             <thead><tr><th>Site</th><th>From</th><th>To</th><th class="num">Days</th></tr></thead>
-            <tbody>${gaps.map((g) => `<tr class="clickable" data-site="${esc(g.plant_name)}">
-                <td>${esc(g.plant_name)}</td><td>${dayName(g.gap_start)}</td>
+            <tbody>${gaps.map((g) => `<tr class="clickable" data-site="${esc(g.site_code)}">
+                <td><strong>${esc(g.site)}</strong></td><td>${dayName(g.gap_start)}</td>
                 <td>${dayName(g.gap_end)}</td><td class="num">${fmt(g.days)}</td></tr>`).join('')}</tbody></table></div>`;
     } else {
         body += `<p class="sub">Open the Fleet or Data quality screen to see the sites this applies to.</p>`;
