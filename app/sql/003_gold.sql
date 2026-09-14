@@ -9,11 +9,23 @@ CREATE TABLE IF NOT EXISTS gold.emission_factor (
     value_tco2e_per_mwh numeric(10, 5) NOT NULL,
     factor_type   text NOT NULL,          -- combined_margin | operating_margin | grid_average
     source        text NOT NULL,
+    source_url    text,
     vintage       text NOT NULL,
     valid_from    date NOT NULL,
     valid_to      date,
+    -- A factor is unverified until a person has checked it against the source
+    -- document named above. The default is false on purpose: a number nobody
+    -- has checked must never present itself as one that someone has.
+    verified      boolean NOT NULL DEFAULT false,
+    verified_by   text,
+    verified_at   timestamptz,
     UNIQUE (factor_type, valid_from)
 );
+
+ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS source_url  text;
+ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified    boolean NOT NULL DEFAULT false;
+ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified_by text;
+ALTER TABLE gold.emission_factor ADD COLUMN IF NOT EXISTS verified_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS gold.price (
     price_id    bigserial PRIMARY KEY,
@@ -79,8 +91,10 @@ SELECT sm.plant_name,
        ef.value_tco2e_per_mwh                                     AS emission_factor,
        ef.factor_type,
        ef.source                                                  AS factor_source,
+       ef.source_url                                              AS factor_source_url,
        ef.vintage                                                 AS factor_vintage,
        ef.valid_from                                              AS factor_valid_from,
+       COALESCE(ef.verified, false)                               AS factor_verified,
        (sm.eligible_kwh / 1000.0) * ef.value_tco2e_per_mwh        AS baseline_emissions_tco2e,
        0::numeric                                                 AS project_emissions_tco2e,
        0::numeric                                                 AS leakage_tco2e,

@@ -33,8 +33,10 @@ variable there redeploys the service.
 | `ZERO_DAY_POLICY` | `suspect` | `suspect` or `ok` |
 | `MISSING_DAY_POLICY` | `exclude` | `exclude` or `zero` |
 | `TRUST_GRID_CONNECTION_DATE` | `true` | Shown as an assumption |
-| `DEFAULT_EMISSION_FACTOR` | `0.3550` | Seed only — see the warning below |
-| `DEFAULT_EMISSION_FACTOR_SOURCE` | IFI 2021 v3.2 … | Seed only |
+| `DEFAULT_EMISSION_FACTOR` | *(empty)* | Seed only — **unset by default, see below** |
+| `DEFAULT_EMISSION_FACTOR_SOURCE` | *(empty)* | The document the factor came from |
+| `DEFAULT_EMISSION_FACTOR_URL` | *(empty)* | Link to that document |
+| `DEFAULT_EMISSION_FACTOR_VINTAGE` | `unset` | The factor's vintage year |
 | `DEFAULT_IREC_PRICE_PER_MWH` | `1.50` | Seed only |
 | `DEFAULT_VCU_PRICE_PER_TCO2E` | `8.00` | Seed only |
 | `PRICE_CURRENCY` | `USD` | Seed only |
@@ -200,9 +202,11 @@ UPDATE gold.emission_factor SET valid_to = DATE '2024-12-31'
  WHERE valid_to IS NULL;
 
 INSERT INTO gold.emission_factor
-    (value_tco2e_per_mwh, factor_type, source, vintage, valid_from, valid_to)
-VALUES (0.4120, 'combined_margin',
-        'IFI Default Grid Factor 2025 — Armenia', '2025', DATE '2025-01-01', NULL);
+    (value_tco2e_per_mwh, factor_type, source, source_url, vintage,
+     valid_from, valid_to, verified)
+VALUES (<value>, 'combined_margin',
+        '<document, edition and table>', '<url>', '<vintage>',
+        DATE '2025-01-01', NULL, false);
 
 -- A price as of a date.
 INSERT INTO gold.price (instrument, value, currency, source, as_of)
@@ -213,8 +217,36 @@ Every Gold view joins the factor on date, so historical months keep the factor
 that was valid then and the new one applies going forward. Reload the page and
 the numbers move — there is nothing to recompute.
 
-**The emission factor is the number most likely to be challenged.** It is still
-outstanding, and 0.3550 is a placeholder.
+### The emission factor is not set, deliberately
+
+There is **no default emission factor**. The task list records it as still
+outstanding, so the app treats it as outstanding rather than filling the hole:
+
+- With no factor set, `gold.carbon` produces no figure, the portal reports
+  carbon and carbon revenue as zero, and the calculation panel says why. Energy
+  and I-REC numbers are unaffected — they don't depend on it.
+- Every factor is stored with `verified = false` until a person has checked it
+  against the source document and set it. Until then the portal badges the
+  factor **unverified** and puts a warning next to every number derived from it.
+
+This is the one number in the app most likely to be challenged, so it is the one
+number that is not allowed to arrive without a provenance. Set it with both the
+value and its source:
+
+```
+DEFAULT_EMISSION_FACTOR=0.46
+DEFAULT_EMISSION_FACTOR_SOURCE=<the document, edition and table it came from>
+DEFAULT_EMISSION_FACTOR_URL=<link to that document>
+DEFAULT_EMISSION_FACTOR_VINTAGE=2024
+```
+
+Then mark it checked once someone has actually opened that document:
+
+```sql
+UPDATE gold.emission_factor
+   SET verified = true, verified_by = 'name', verified_at = now()
+ WHERE factor_id = 1;
+```
 
 ---
 

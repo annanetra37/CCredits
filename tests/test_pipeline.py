@@ -214,3 +214,63 @@ def test_inactive_site_energy_is_excluded_with_its_own_reason():
     assert float(row["eligible_kwh"]) == 0.0
     assert float(row["excluded_kwh"]) == 500.0
     assert row["exclusion_reason"] == "site_inactive"
+
+
+# --- The emission factor must never arrive without a provenance -------------
+
+@pytest.fixture
+def no_emission_factor():
+    """Remove the factors for one test, then put them back."""
+    saved = query("SELECT * FROM gold.emission_factor")
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM gold.emission_factor")
+        conn.commit()
+    yield
+    with connection() as conn, conn.cursor() as cur:
+        for row in saved:
+            cur.execute(
+                """
+                INSERT INTO gold.emission_factor
+                    (factor_id, value_tco2e_per_mwh, factor_type, source, source_url,
+                     vintage, valid_from, valid_to, verified, verified_by, verified_at)
+                VALUES (%(factor_id)s, %(value_tco2e_per_mwh)s, %(factor_type)s, %(source)s,
+                        %(source_url)s, %(vintage)s, %(valid_from)s, %(valid_to)s,
+                        %(verified)s, %(verified_by)s, %(verified_at)s)
+                """,
+                row,
+            )
+        conn.commit()
+
+
+def test_without_a_factor_carbon_is_absent_rather_than_guessed(no_emission_factor):
+    load_bytes(wide([1000.0], kwp=500.0), "nofactor.xlsx")
+    row = query_one(
+        "SELECT emission_factor, net_reduction_tco2e, eligible_kwh FROM gold.carbon"
+    )
+    # The energy is still there; only the carbon claim is withheld.
+    assert float(row["eligible_kwh"]) == 1000.0
+    assert row["emission_factor"] is None
+    assert row["net_reduction_tco2e"] is None
+    # And no placeholder has crept in anywhere.
+    assert query_one("SELECT COUNT(*) n FROM gold.emission_factor")["n"] == 0
+
+
+def test_energy_and_irecs_do_not_depend_on_the_factor(no_emission_factor):
+    load_bytes(wide([1500.0] + [0.0] * 30, kwp=5000.0), "irec-nofactor.xlsx")
+    row = query_one("SELECT SUM(eligible_kwh) kwh, SUM(irec_issued) issued FROM gold.irec")
+    assert float(row["kwh"]) == 1500.0
+    assert int(row["issued"]) == 1
+
+
+def test_a_factor_is_unverified_until_a_person_says_otherwise():
+    rows = query("SELECT factor_id, verified FROM gold.emission_factor")
+    assert rows, "expected at least one seeded factor in this database"
+    # Nothing in the code path may set verified = true; only a person does.
+    assert all(r["verified"] is False for r in rows)
+
+
+def test_the_verified_flag_travels_with_the_number_it_produced():
+    load_bytes(wide([1000.0], kwp=500.0), "verified.xlsx")
+    row = query_one("SELECT factor_verified, net_reduction_tco2e FROM gold.carbon")
+    assert row["factor_verified"] is False
+    assert row["net_reduction_tco2e"] is not None
