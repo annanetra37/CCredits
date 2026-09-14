@@ -555,6 +555,44 @@ async function openReason(reason) {
     });
 }
 
+/* -------------------------------------------------- Reconciliation */
+
+el('runRecon').onclick = async () => {
+    const btn = el('runRecon');
+    btn.disabled = true;
+    el('reconResult').innerHTML = `<div class="loading">Re-reading the original files and
+        recomputing every figure…</div>`;
+    try {
+        const d = await api('/api/reconcile');
+        const badge = (st) => st === 'pass' ? '<span class="pill ok">pass</span>'
+                            : st === 'fail' ? '<span class="pill missing">fail</span>'
+                            : '<span class="pill grey">skipped</span>';
+        el('reconResult').innerHTML = `
+            <div class="${d.ok ? 'recon-ok' : 'unverified'}" style="margin-top:14px">
+                ${d.ok
+                    ? `✓ ${d.passed} checks passed. Every figure was reproduced independently and matched.`
+                    : `⚠ ${d.failed} of ${d.passed + d.failed} checks did not pass. Details below.`}
+                ${d.skipped ? ` ${d.skipped} skipped.` : ''}
+            </div>
+            <div class="scroll" style="margin-top:14px"><table>
+            <thead><tr><th>Check</th><th>Result</th><th class="num">Views say</th>
+                <th class="num">Recomputed</th></tr></thead>
+            <tbody>${d.checks.map((k) => `
+                <tr>
+                    <td>${esc(k.title)}
+                        <div class="src-note">${esc(k.detail || '')}</div>
+                        ${(k.offenders || []).map((o) => `<div class="src-note" style="color:var(--gap-ink)">— ${esc(o)}</div>`).join('')}</td>
+                    <td>${badge(k.status)}</td>
+                    <td class="num mono">${esc(k.app || '—')}</td>
+                    <td class="num mono">${esc(k.recomputed || '—')}</td>
+                </tr>`).join('')}
+            </tbody></table></div>`;
+    } catch (err) {
+        el('reconResult').innerHTML = `<div class="err" style="margin-top:14px">Could not run: ${esc(err.message)}</div>`;
+    }
+    btn.disabled = false;
+};
+
 /* ------------------------------------------------------ 5.1 Upload */
 
 const drop = el('drop'), fileInput = el('fileInput');

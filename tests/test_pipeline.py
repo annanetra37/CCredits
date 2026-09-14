@@ -67,9 +67,11 @@ def factor_for_2025():
     yield 0.4329
     with connection() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM gold.emission_factor WHERE factor_id = %s", (fid,))
+        # Restore the published solar row. Matched on its value rather than a
+        # LIKE pattern: psycopg leaves %% literal in a query with no parameters,
+        # so the pattern silently matched nothing and the teardown did nothing.
         cur.execute(
-            "UPDATE gold.emission_factor SET active = true "
-            "WHERE project_types LIKE 'Wind and solar%%'"
+            "UPDATE gold.emission_factor SET active = (value_tco2e_per_mwh = 0.4329)"
         )
         conn.commit()
 
@@ -330,3 +332,60 @@ def test_the_verified_flag_travels_with_the_number_it_produced(factor_for_2025):
     row = query_one("SELECT factor_verified, net_reduction_tco2e FROM gold.carbon")
     assert row["factor_verified"] is False
     assert row["net_reduction_tco2e"] is not None
+
+
+# --- The reconciliation must actually bite ---------------------------------
+
+def _recon(name: str):
+    import cli.reconcile as rec
+    return {c.name: c for c in rec.run(verbose=True)}[name]
+
+
+def test_reconciliation_passes_on_untouched_data(factor_for_2025):
+    import cli.reconcile as rec
+    load_bytes(wide([1000.0, 1200.0], kwp=500.0), "recon-clean.xlsx")
+    results = rec.run(verbose=False)
+    failed = [c for c in results if c.status == "fail"]
+    assert not failed, [f"{c.name}: {c.detail}" for c in failed]
+
+
+def test_reconciliation_catches_an_altered_bronze_value():
+    """A checker that cannot fail is worth nothing. Change one cell by 0.01."""
+    load_bytes(wide([1000.0, 1200.0], kwp=500.0), "recon-tamper.xlsx")
+    assert _recon("reparse_matches_bronze").status == "pass"
+
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE bronze.reading SET value = value + 0.01 "
+            "WHERE reading_id = (SELECT MIN(reading_id) FROM bronze.reading)"
+        )
+        conn.commit()
+
+    check = _recon("reparse_matches_bronze")
+    assert check.status == "fail"
+    assert check.offenders, "a failure must name the rows responsible"
+
+
+def test_reconciliation_catches_a_deleted_bronze_row():
+    load_bytes(wide([1000.0, 1200.0], kwp=500.0), "recon-delete.xlsx")
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM bronze.reading "
+            "WHERE reading_id = (SELECT MIN(reading_id) FROM bronze.reading)"
+        )
+        conn.commit()
+    assert _recon("reparse_matches_bronze").status == "fail"
+
+
+def test_reconciliation_names_the_missing_factor_as_the_reason_for_zero():
+    """The lapsed-baseline case must be reported, not silently skipped."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE gold.emission_factor SET active = (value_tco2e_per_mwh = 0.4329)")
+        conn.commit()
+    assert query_one("SELECT COUNT(*) n FROM gold.emission_factor WHERE active")["n"] == 1
+    load_bytes(wide([1000.0, 1200.0], kwp=500.0), "recon-nofactor.xlsx")
+    check = _recon("factor_coverage")
+    assert check.status == "fail"
+    assert "no applicable emission factor" in check.detail
+    assert "2018-02-19" in check.detail and "2021-02-18" in check.detail
+    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0

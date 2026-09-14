@@ -64,6 +64,26 @@ python cli/load_bronze.py --json export.xlsx     # raw parse summary
 python cli/load_bronze.py --reset                # empty Bronze, keep reference data
 ```
 
+## Proving the numbers
+
+Every figure the portal shows comes from a SQL view. `cli/reconcile.py`
+recomputes the same figures a second time in Python — from the Bronze cells and
+from a fresh parse of the stored original files, never from the views — and
+compares them. Two independent implementations agreeing to four decimal places
+is the evidence that the transfer to Gold is faithful.
+
+```bash
+python cli/reconcile.py            # the report
+python cli/reconcile.py --verbose  # list every disagreeing row
+python cli/reconcile.py --json     # machine readable; exit 1 on any failure
+```
+
+The same checks are one click away in the portal, at the bottom of the **Data
+quality** screen, and at `GET /api/reconcile`.
+
+Three tests assert that the reconciliation actually bites: altering one Bronze
+value by 0.01 kWh, or deleting a single row, must make it fail and name the row.
+
 ## Tests
 
 ```bash

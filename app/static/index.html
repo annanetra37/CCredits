@@ -89,6 +89,16 @@
         </div>
     </div>
     <div class="panel">
+        <h2>Reconciliation</h2>
+        <p class="sub">Every figure on this portal is produced by SQL views. This recomputes the
+            same figures a second time in Python — from the Bronze cells and from a fresh parse of
+            the stored original files, never from the views — and compares them. Two independent
+            implementations agreeing is the evidence that the transfer to Gold is faithful.</p>
+        <button class="primary" id="runRecon">Run reconciliation</button>
+        <div id="reconResult"></div>
+    </div>
+
+    <div class="panel">
         <h2>Overlapping files</h2>
         <p class="sub">Where a later upload covers dates an earlier one already did. Nothing is
             deleted — the later file wins for those site-days and the earlier readings are kept
