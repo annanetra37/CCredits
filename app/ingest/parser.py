@@ -37,10 +37,18 @@ PLANT_NAME_KEYS = {
     "power plant", "power plant name", "site", "site name", "plant_name",
     "power station", "name",
 }
-DEVICE_KEYS = {
-    "device sn", "device serial number", "serial number", "sn", "inverter sn",
-    "device name", "device", "inverter", "inverter name", "equipment sn",
-    "device_sn", "serial no", "device no",
+DEVICE_SN_KEYS = {
+    "device sn", "device s/n", "device serial number", "serial number", "sn", "s/n",
+    "inverter sn", "inverter s/n", "equipment sn", "device_sn", "serial no", "device no",
+}
+DEVICE_NAME_KEYS = {
+    "device name", "device", "inverter", "inverter name", "device alias",
+}
+DEVICE_KEYS = DEVICE_SN_KEYS | DEVICE_NAME_KEYS
+# The datalogger, not the inverter — it must never become the device identity.
+DATALOGGER_KEYS = {
+    "communication device sn", "communication device s/n", "communication device",
+    "logger sn", "logger s/n", "datalogger sn", "collector sn", "communication module sn",
 }
 DATE_KEYS = {
     "date", "time", "day", "statistical period", "date time", "datetime",
@@ -83,6 +91,13 @@ IGNORED_METRIC_KEYS = {
     "revenue", "income", "earnings", "profit", "co2 reduction", "co2 reduced",
     "co2", "standard coal saved", "coal saved", "trees planted", "so2 reduction",
     "no", "no.", "index", "serial", "remark", "remarks",
+    # Present in the Sungrow export and deliberately unused: consumption and
+    # purchase are load-side, and creation date is not the grid connection date.
+    "email", "creation date", "daily load consumption", "total load consumption",
+    "energy purchased", "energy purchase", "daily energy purchased",
+    "feed in energy", "daily feed in energy", "self consumption", "consumption",
+    "daily consumption", "total consumption", "device type", "device model",
+    "communication status", "country", "timezone", "currency",
 }
 
 NULL_TOKENS = {"", "-", "--", "---", "n/a", "na", "null", "none", "nan", "/", "\\", "--:--"}
@@ -255,12 +270,29 @@ def read_sheets(path: Path | str, data: bytes | None = None) -> list[Sheet]:
 
     from openpyxl import load_workbook
 
+    # Read-only mode trusts the worksheet's declared <dimension>. Sungrow's
+    # exporter writes that element wrong, so openpyxl returns one row out of
+    # several thousand and the file looks headerless. reset_dimensions() makes
+    # it scan the actual cells instead; a full (non read-only) reload is the
+    # fallback for anything that still comes back suspiciously short.
     book = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     sheets = []
     for ws in book.worksheets:
+        try:
+            ws.reset_dimensions()
+        except AttributeError:
+            pass
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
         sheets.append(Sheet(name=ws.title, rows=rows))
     book.close()
+
+    if all(len(sh.rows) < 2 for sh in sheets):
+        book = load_workbook(io.BytesIO(raw), read_only=False, data_only=True)
+        sheets = [
+            Sheet(name=ws.title, rows=[list(r) for r in ws.iter_rows(values_only=True)])
+            for ws in book.worksheets
+        ]
+        book.close()
     return sheets
 
 
@@ -380,6 +412,7 @@ class ParsedFile:
 class ColumnMap:
     plant_name: int | None = None
     device_sn: int | None = None
+    device_name: int | None = None
     date: int | None = None
     installed_kwp: int | None = None
     plant_type: int | None = None
@@ -392,6 +425,8 @@ class ColumnMap:
 
 
 def map_columns(header: list[Any]) -> ColumnMap:
+    """Work out what each column is. A device serial number is preferred over a
+    display name, because two plants can reuse a name but not a serial."""
     cmap = ColumnMap()
     for index, cell in enumerate(header):
         raw = _text(cell)
@@ -404,10 +439,14 @@ def map_columns(header: list[Any]) -> ColumnMap:
                 continue
         key = normalise(raw)
         label, unit = split_unit(raw)
-        if key in DATE_KEYS and cmap.date is None:
+        if key in DATALOGGER_KEYS:
+            continue  # the logger identifies the site's gateway, not a device
+        elif key in DATE_KEYS and cmap.date is None:
             cmap.date = index
-        elif key in DEVICE_KEYS and cmap.device_sn is None:
+        elif key in DEVICE_SN_KEYS and cmap.device_sn is None:
             cmap.device_sn = index
+        elif key in DEVICE_NAME_KEYS and cmap.device_name is None:
+            cmap.device_name = index
         elif key in PLANT_NAME_KEYS and cmap.plant_name is None:
             cmap.plant_name = index
         elif key in INSTALLED_KWP_KEYS and cmap.installed_kwp is None:
@@ -432,6 +471,8 @@ def map_columns(header: list[Any]) -> ColumnMap:
                 cmap.metrics[index] = (matched, label, unit)
             else:
                 cmap.unknown.append(raw)
+    if cmap.device_sn is None and cmap.device_name is not None:
+        cmap.device_sn = cmap.device_name
     return cmap
 
 
