@@ -25,13 +25,17 @@ END = dt.date(2025, 3, 31)
 
 SITES = [
     # name, kWp, grid connection, type, address, status, inverters
-    ("SANNOVA Ararat 1",   248.4, dt.date(2023, 6, 14),  "Ground mounted", "Ararat, Armenia",   "Normal", 3),
-    ("SANNOVA Armavir 2",  186.0, dt.date(2023, 9, 2),   "Rooftop",        "Armavir, Armenia",  "Normal", 2),
-    ("SANNOVA Kotayk 3",   412.5, dt.date(2024, 2, 18),  "Ground mounted", "Kotayk, Armenia",   "Normal", 4),
-    ("SANNOVA Shirak 4",    95.2, dt.date(2024, 11, 5),  "Rooftop",        "Shirak, Armenia",   "Normal", 1),
-    ("SANNOVA Syunik 5",   320.0, dt.date(2025, 2, 10),  "Ground mounted", "Syunik, Armenia",   "Normal", 3),
-    ("SANNOVA Lori 6",     150.8, dt.date(2023, 4, 21),  "Rooftop",        "Lori, Armenia",     "Offline", 2),
+    ("SANNOVA Yerevan 1",  248.4, dt.date(2023, 6, 14),  "Ground mounted", "Yerevan, Armenia",     "Normal", 3),
+    ("SANNOVA Armavir 2",  186.0, dt.date(2023, 9, 2),   "Rooftop",        "Armavir, Armenia",     "Normal", 2),
+    ("SANNOVA Kotayk 3",   412.5, dt.date(2024, 2, 18),  "Ground mounted", "Kotayk, Armenia",      "Normal", 4),
+    ("SANNOVA Shirak 4",    95.2, dt.date(2024, 11, 5),  "Rooftop",        "Shirak, Armenia",      "Normal", 1),
+    ("SANNOVA Syunik 5",   320.0, dt.date(2025, 2, 10),  "Ground mounted", "Syunik, Armenia",      "Normal", 3),
+    ("SANNOVA Lori 6",     150.8, dt.date(2023, 4, 21),  "Rooftop",        "Lori, Armenia",        "Offline", 2),
+    ("SANNOVA Gegh 7",     275.0, dt.date(2023, 8, 1),   "Ground mounted", "Gegharkunik, Armenia", "Normal", 2),
+    ("SANNOVA Ararat 8",   198.5, dt.date(2024, 4, 12),  "Ground mounted", "Ararat, Armenia",      "Normal", 2),
+    ("SANNOVA Tavush 9",    88.0, dt.date(2024, 7, 3),   "Rooftop",        "Tavush, Armenia",      "Normal", 1),
 ]
+
 
 
 def daily_kwh(kwp: float, day: dt.date, seed_offset: int) -> float | None:
@@ -61,7 +65,7 @@ def build_series() -> dict[tuple[str, dt.date], float | None]:
     for i in range(6):
         series[("SANNOVA Kotayk 3", dt.date(2025, 3, 12) + dt.timedelta(days=i))] = 0.0
     # One implausible spike — a meter reset reported as a day's generation.
-    series[("SANNOVA Ararat 1", dt.date(2025, 2, 19))] = 248.4 * 11.4
+    series[("SANNOVA Yerevan 1", dt.date(2025, 2, 19))] = 248.4 * 11.4
     return series
 
 

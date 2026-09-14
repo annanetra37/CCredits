@@ -97,16 +97,14 @@ def wide(values, kwp=100.0, grid=dt.date(2024, 1, 1), status="Normal", name="Sit
     ])
 
 
-def test_loads_and_the_river_balances():
+def test_all_generated_energy_counts():
+    """There is no eligibility split: every kilowatt-hour read reaches Gold."""
     result = load_bytes(wide([100.0, 200.0, 300.0]), "wide.xlsx")
     assert result["status"] == "loaded"
-    row = query_one(
-        "SELECT SUM(generation_kwh) g, SUM(eligible_kwh) e, SUM(excluded_kwh) x "
-        "FROM silver.eligibility"
-    )
-    # Nothing may vanish between generated and credits.
-    assert float(row["g"]) == 600.0
-    assert float(row["e"]) + float(row["x"]) == float(row["g"])
+    silver = query_one("SELECT COALESCE(SUM(generation_kwh),0) g FROM silver.site_month")
+    gold = query_one("SELECT COALESCE(SUM(generation_kwh),0) g FROM gold.revenue")
+    assert float(silver["g"]) == 600.0
+    assert float(gold["g"]) == 600.0
 
 
 def test_identical_file_is_refused_not_loaded_twice():
@@ -134,80 +132,35 @@ def test_overlapping_upload_supersedes_rather_than_deletes():
     assert query_one("SELECT COUNT(*) n FROM silver.superseded_site_day")["n"] == 2
 
 
-def test_missing_day_is_a_gap_and_is_never_interpolated():
+def test_a_day_with_no_reading_simply_is_not_there():
+    """No gap, no zero, no flag — the day is absent and nothing is invented."""
     load_bytes(wide([100.0, None, 300.0]), "gap.xlsx")
-    day = query_one(
-        """
-        SELECT e.flag, e.generation_kwh, e.eligible_kwh
-        FROM silver.eligibility e
-        WHERE e.reading_date = DATE '2025-01-02'
-        """
-    )
-    assert day["flag"] == "missing"
-    assert float(day["generation_kwh"]) == 0.0      # not the average of its neighbours
-    assert float(day["eligible_kwh"]) == 0.0
-    reason = query_one(
-        "SELECT exclusion_reason FROM silver.eligibility WHERE reading_date = DATE '2025-01-02'"
-    )
-    assert reason["exclusion_reason"] == "data_gap"
+    days = query("SELECT reading_date, generation_kwh FROM silver.generation_daily ORDER BY 1")
+    assert [d["reading_date"] for d in days] == [dt.date(2025, 1, 1), dt.date(2025, 1, 3)]
+    assert float(query_one("SELECT SUM(generation_kwh) g FROM silver.site_month")["g"]) == 400.0
 
 
-def test_implausible_day_is_excluded_with_the_rule_named():
-    # 100 kWp at 8 kWh/kWp/day is 800 kWh; 2000 is far above the threshold.
+def test_an_unusually_large_reading_still_counts():
+    """Nothing is second-guessed: what the file says is what is counted."""
     load_bytes(wide([100.0, 2000.0]), "spike.xlsx")
-    day = query_one(
-        "SELECT flag, flag_reason, is_implausible FROM silver.quality_flag "
-        "WHERE reading_date = DATE '2025-01-02'"
-    )
-    assert day["is_implausible"] is True
-    assert day["flag"] == "suspect"
-    assert "8" in day["flag_reason"]
-    excluded = query_one(
-        "SELECT eligible_kwh, excluded_kwh, exclusion_reason FROM silver.eligibility "
-        "WHERE reading_date = DATE '2025-01-02'"
-    )
-    assert float(excluded["eligible_kwh"]) == 0.0
-    assert float(excluded["excluded_kwh"]) == 2000.0
-    assert excluded["exclusion_reason"] == "quality_suspect"
+    assert float(query_one("SELECT SUM(generation_kwh) g FROM silver.site_month")["g"]) == 2100.0
 
 
-def test_energy_before_grid_connection_does_not_earn():
+def test_energy_before_grid_connection_still_counts():
     load_bytes(wide([100.0, 100.0], grid=dt.date(2025, 1, 2)), "early.xlsx")
-    first = query_one(
-        "SELECT eligible_kwh, excluded_kwh, exclusion_reason FROM silver.eligibility "
-        "WHERE reading_date = DATE '2025-01-01'"
+    assert float(query_one("SELECT SUM(generation_kwh) g FROM silver.site_month")["g"]) == 200.0
+
+
+def test_vcus_equal_tonnes_exactly(factor_for_2025):
+    """One tonne avoided is one unit. Nothing is floored or carried forward."""
+    load_bytes(wide([5000.0, 7000.0], kwp=20000.0), "vcu.xlsx")
+    row = query_one(
+        "SELECT generation_kwh, net_reduction_tco2e, vcu_issued FROM gold.vcu"
     )
-    assert float(first["eligible_kwh"]) == 0.0
-    assert first["exclusion_reason"] == "before_grid_connection"
-    second = query_one(
-        "SELECT eligible_kwh FROM silver.eligibility WHERE reading_date = DATE '2025-01-02'"
-    )
-    assert float(second["eligible_kwh"]) == 100.0
-
-
-def test_vcu_carries_the_remainder_forward_instead_of_rounding_it_away(factor_for_2025):
-    """A VCU is one whole tonne; the fraction rolls on rather than vanishing."""
-    # 5,000 kWh in January and 7,000 in February at 0.4329 tCO2e/MWh gives
-    # 2.1645 then 3.0303 tonnes. Month 1 issues 2 and carries 0.1645; month 2
-    # has 0.1645 + 3.0303 = 3.1948, so it issues 3 and carries 0.1948.
-    jan = [5000.0] + [0.0] * 30
-    feb = [7000.0] + [0.0] * 27
-    days = ([dt.date(2025, 1, 1) + dt.timedelta(days=i) for i in range(31)]
-            + [dt.date(2025, 2, 1) + dt.timedelta(days=i) for i in range(28)])
-    data = book([
-        ["Daily Yield Report (kWh)"],
-        ["Plant Name", "Installed Capacity(kWp)", "Grid Connection Date", "Plant Status"] + days,
-        ["Site A", 20000.0, dt.date(2024, 1, 1), "Normal"] + jan + feb,
-    ])
-    load_bytes(data, "carry.xlsx")
-
-    rows = query("SELECT month, vcu_issued, carry_forward_tco2e FROM gold.vcu ORDER BY month")
-    assert [int(r["vcu_issued"]) for r in rows] == [2, 3]
-    assert float(rows[0]["carry_forward_tco2e"]) == pytest.approx(0.1645, abs=1e-4)
-    assert float(rows[1]["carry_forward_tco2e"]) == pytest.approx(0.1948, abs=1e-4)
-    # Nothing is issued that was not reduced.
-    total = query_one("SELECT SUM(net_reduction_tco2e) t, SUM(vcu_issued) v FROM gold.vcu")
-    assert float(total["v"]) <= float(total["t"])
+    expected = 12.0 * factor_for_2025          # 12 MWh generated
+    assert float(row["net_reduction_tco2e"]) == pytest.approx(expected)
+    # The two figures are the same number, to the last decimal place.
+    assert row["vcu_issued"] == row["net_reduction_tco2e"]
 
 
 def test_lineage_reaches_the_cell():
@@ -271,15 +224,10 @@ def test_the_published_validity_is_recorded_even_when_the_factor_is_applied_past
     assert row["factor_beyond_validity"] is True
 
 
-def test_inactive_site_energy_is_excluded_with_its_own_reason():
+def test_an_offline_site_still_counts():
     load_bytes(wide([500.0], status="Offline"), "offline.xlsx")
-    row = query_one("SELECT eligible_kwh, excluded_kwh, exclusion_reason FROM silver.eligibility")
-    assert float(row["eligible_kwh"]) == 0.0
-    assert float(row["excluded_kwh"]) == 500.0
-    assert row["exclusion_reason"] == "site_inactive"
+    assert float(query_one("SELECT SUM(generation_kwh) g FROM silver.site_month")["g"]) == 500.0
 
-
-# --- The emission factor must never arrive without a provenance -------------
 
 @pytest.fixture
 def no_emission_factor():
@@ -291,27 +239,19 @@ def no_emission_factor():
     yield
     with connection() as conn, conn.cursor() as cur:
         for row in saved:
-            cur.execute(
-                """
-                INSERT INTO gold.emission_factor
-                    (factor_id, value_tco2e_per_mwh, factor_type, source, source_url,
-                     vintage, valid_from, valid_to, verified, verified_by, verified_at)
-                VALUES (%(factor_id)s, %(value_tco2e_per_mwh)s, %(factor_type)s, %(source)s,
-                        %(source_url)s, %(vintage)s, %(valid_from)s, %(valid_to)s,
-                        %(verified)s, %(verified_by)s, %(verified_at)s)
-                """,
-                row,
-            )
+            cols = ", ".join(row.keys())
+            slots = ", ".join(f"%({k})s" for k in row)
+            cur.execute(f"INSERT INTO gold.emission_factor ({cols}) VALUES ({slots})", row)
         conn.commit()
 
 
 def test_without_a_factor_carbon_is_absent_rather_than_guessed(no_emission_factor):
     load_bytes(wide([1000.0], kwp=500.0), "nofactor.xlsx")
     row = query_one(
-        "SELECT emission_factor, net_reduction_tco2e, eligible_kwh FROM gold.carbon"
+        "SELECT emission_factor, net_reduction_tco2e, generation_kwh FROM gold.carbon"
     )
     # The energy is still there; only the carbon claim is withheld.
-    assert float(row["eligible_kwh"]) == 1000.0
+    assert float(row["generation_kwh"]) == 1000.0
     assert row["emission_factor"] is None
     assert row["net_reduction_tco2e"] is None
     # And no placeholder has crept in anywhere.
@@ -320,10 +260,10 @@ def test_without_a_factor_carbon_is_absent_rather_than_guessed(no_emission_facto
 
 def test_energy_does_not_depend_on_the_factor(no_emission_factor):
     """A missing factor withholds the carbon claim; it must not touch the energy."""
-    load_bytes(wide([1500.0] + [0.0] * 30, kwp=5000.0), "nofactor.xlsx")
-    row = query_one("SELECT SUM(eligible_kwh) kwh FROM silver.site_month")
+    load_bytes(wide([1500.0] + [0.0] * 30, kwp=5000.0), "nofactor2.xlsx")
+    row = query_one("SELECT SUM(generation_kwh) kwh FROM silver.site_month")
     assert float(row["kwh"]) == 1500.0
-    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
+    assert float(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
 
 
 def test_a_factor_is_unverified_until_a_person_says_otherwise():
@@ -389,7 +329,7 @@ def test_reconciliation_names_a_missing_factor_as_the_reason_for_zero(no_emissio
     check = _recon("factor_coverage")
     assert check.status == "fail"
     assert "no applicable emission factor" in check.detail
-    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
+    assert float(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
 
 
 def test_sites_are_pseudonymised_by_default():

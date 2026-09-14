@@ -186,7 +186,7 @@ p.sub { color: var(--ink-2); margin: 0 0 18px; font-size: 13px; max-width: 76ch;
 }
 
 /* --- 5.2 The river --- */
-#river { width: 100%; height: 345px; display: block; }
+#river { width: 100%; height: 250px; display: block; }
 .flow-label { font-size: 12px; fill: var(--ink); font-weight: 560; }
 .flow-sub { font-size: 10.5px; fill: var(--ink-3); }
 .flow-cap {
@@ -422,3 +422,32 @@ details.more summary {
     cursor: pointer; font-size: 12.5px; color: var(--accent-ink); font-weight: 550; padding: 7px 0;
 }
 details.more summary:hover { text-decoration: underline; }
+
+/* --- The brand mark is a link home --- */
+button.brand {
+    background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+    font-size: 17px; font-weight: 700; letter-spacing: -.022em; color: var(--ink);
+}
+button.brand:hover span { color: var(--accent-ink); }
+
+/* --- The flow diagram --- */
+.flow-big { font-size: 26px; font-weight: 680; fill: var(--ink); letter-spacing: -.02em; }
+
+/* --- The province map --- */
+.map-wrap { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 18px; }
+#map { width: min(420px, 100%); height: auto; flex: none; }
+.province { transition: fill .15s var(--ease), stroke .15s var(--ease); }
+.province.has-data { cursor: pointer; }
+.province.has-data:hover { stroke: var(--accent-ink); stroke-width: 3; }
+#mapLegend { display: flex; align-items: center; gap: 4px; padding-top: 6px; }
+#mapLegend i { display: block; width: 26px; height: 9px; border-radius: 2px; }
+.legend-label { font-size: 11px; color: var(--ink-3); margin: 0 6px; }
+tbody tr.row-on { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+
+/* --- Empty state: one obvious thing to do --- */
+.panel.hero { text-align: center; padding: 56px 24px; }
+.hero-title { font-size: 21px; margin-bottom: 8px; }
+.panel.hero .sub { margin: 0 auto 20px; max-width: 46ch; }
+.context-line {
+    color: var(--ink-3); font-size: 12.5px; margin: 0 0 16px; font-variant-numeric: tabular-nums;
+}
