@@ -142,3 +142,79 @@ def test_csv_is_accepted():
 def test_sha256_is_stable_for_identical_bytes():
     data = book([["Plant Name", dt.date(2025, 1, 1)], ["Site A", 1.0]])
     assert load_file("a.xlsx", data=data).sha256 == load_file("b.xlsx", data=data).sha256
+
+
+# --- The real Sungrow export shape -----------------------------------------
+
+SUNGROW_PLANT_HEADER = [
+    "Plant name", "Time", "Installed power(kWp)", "Plant type", "Creation date",
+    "Grid connection date", "Address", "Email", "Plant status", "Daily yield(kWh)",
+    "Total yield(kWh)", "Daily load consumption(kWh)", "Total load consumption(kWh)",
+]
+SUNGROW_INVERTER_HEADER = [
+    "Plant name", "Time", "Installed power(kWp)", "Plant type", "Creation date",
+    "Grid connection date", "Address", "Email", "Plant status",
+    "Device name(Inverter)", "Device S/N", "Communication device S/N",
+    "Daily yield(kWh)", "Total yield(kWh)",
+]
+
+
+def sungrow_book(header, rows):
+    """Logo row, title row, then the real header on row 3 — as exported."""
+    return book([[None], ["plant_daily_v1_Custom_20260101-20260401"], header] + rows,
+                title="Report")
+
+
+def test_reads_the_real_sungrow_plant_export():
+    data = sungrow_book(SUNGROW_PLANT_HEADER, [
+        ["SANNOVA Ararat 1", dt.date(2026, 1, 1), 248.4, "Ground mounted",
+         dt.date(2023, 5, 1), dt.date(2023, 6, 14), "Ararat, Armenia", "a@b.am",
+         "Normal", 120.5, 10000.0, None, None],
+    ])
+    parsed = load_file("plant_daily_v1_Custom report.xlsx", data=data)
+    assert parsed.layout == "long_by_row"
+    assert parsed.grain == "plant"
+    assert parsed.header_row == 3          # two rows of preamble above it
+    assert len(parsed.readings) == 2       # daily yield and total yield
+    site = parsed.sites[0]
+    assert site.installed_kwp == 248.4
+    assert site.grid_connection_date == dt.date(2023, 6, 14)   # not Creation date
+
+
+def test_reads_the_real_sungrow_inverter_export():
+    data = sungrow_book(SUNGROW_INVERTER_HEADER, [
+        ["SANNOVA Shirak 4", dt.date(2026, 1, 1), 95.2, "Rooftop", dt.date(2024, 10, 1),
+         dt.date(2024, 11, 5), "Shirak, Armenia", "a@b.am", "Normal",
+         "INV-01", "A2340891", "COM-99", 24.0, 5000.0],
+    ])
+    parsed = load_file("inverter_daily_v1_Custom report.xlsx", data=data)
+    assert parsed.grain == "inverter"
+    # The serial identifies the device; the display name and the datalogger do not.
+    assert {r.device_sn for r in parsed.readings} == {"A2340891"}
+
+
+def test_a_wrong_declared_dimension_does_not_hide_the_sheet():
+    """Sungrow's exporter writes an <dimension> that does not match the data.
+
+    openpyxl's read-only mode trusts that element, so the whole sheet came back
+    as a single row and the file was reported as having no recognisable header.
+    """
+    import re as _re, zipfile
+
+    data = sungrow_book(SUNGROW_PLANT_HEADER, [
+        ["SANNOVA Ararat 1", dt.date(2026, 1, 1), 248.4, "Ground mounted",
+         dt.date(2023, 5, 1), dt.date(2023, 6, 14), "Ararat", "a@b.am",
+         "Normal", 120.5, 10000.0, None, None],
+    ])
+    source = io.BytesIO(data)
+    broken = io.BytesIO()
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(broken, "w") as zout:
+        for item in zin.infolist():
+            blob = zin.read(item.filename)
+            if item.filename.startswith("xl/worksheets/"):
+                blob = _re.sub(rb"<dimension[^>]*/>", b'<dimension ref="A1:A1"/>', blob)
+            zout.writestr(item, blob)
+
+    parsed = load_file("broken-dimension.xlsx", data=broken.getvalue())
+    assert parsed.ok, parsed.notes
+    assert len(parsed.readings) == 2
