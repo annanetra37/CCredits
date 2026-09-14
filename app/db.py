@@ -92,39 +92,100 @@ def seed_reference_data() -> None:
     operator who edits a factor in the database keeps their edit."""
     with connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM gold.emission_factor")
-        if cur.fetchone()["n"] == 0 and settings.default_emission_factor > 0:
-            # Seeded as unverified. A person marks it verified once they have
-            # checked it against the source document, and only then does the
-            # portal stop labelling every carbon number as unverified.
-            cur.execute(
-                """
-                INSERT INTO gold.emission_factor
-                    (value_tco2e_per_mwh, factor_type, source, source_url, vintage,
-                     valid_from, valid_to, verified)
-                VALUES (%s, 'combined_margin', %s, %s, %s, DATE '2020-01-01', NULL, false)
-                """,
-                (
-                    settings.default_emission_factor,
-                    settings.default_emission_factor_source,
-                    settings.default_emission_factor_url or None,
-                    settings.default_emission_factor_vintage,
-                ),
-            )
-        cur.execute("SELECT COUNT(*) AS n FROM gold.price")
         if cur.fetchone()["n"] == 0:
+            _seed_armenia_baseline(cur)
+
+        cur.execute("SELECT COUNT(*) AS n FROM gold.price")
+        if cur.fetchone()["n"] == 0 and settings.default_vcu_price > 0:
             cur.execute(
                 """
-                INSERT INTO gold.price (instrument, value, currency, source, as_of) VALUES
-                    ('irec', %s, %s, 'Indicative pilot pricing', DATE '2024-01-01'),
-                    ('irec', %s, %s, 'Indicative pilot pricing', DATE '2025-01-01'),
-                    ('vcu',  %s, %s, 'Indicative pilot pricing', DATE '2024-01-01'),
-                    ('vcu',  %s, %s, 'Indicative pilot pricing', DATE '2025-01-01')
+                INSERT INTO gold.price (instrument, value, currency, source, as_of)
+                VALUES ('vcu', %s, %s, %s, DATE '2024-01-01')
                 """,
-                (
-                    settings.default_irec_price, settings.price_currency,
-                    settings.default_irec_price, settings.price_currency,
-                    settings.default_vcu_price, settings.price_currency,
-                    settings.default_vcu_price, settings.price_currency,
-                ),
+                (settings.default_vcu_price, settings.price_currency,
+                 settings.vcu_price_source or "Supplied by configuration"),
             )
+        cur.execute(
+            """
+            INSERT INTO silver.parameter (key, num, txt) VALUES (%s, NULL, %s)
+            ON CONFLICT (key) DO UPDATE SET txt = EXCLUDED.txt, updated_at = now()
+            """,
+            ("allow_expired_emission_factor",
+             str(settings.allow_expired_emission_factor).lower()),
+        )
         conn.commit()
+
+
+# --- The published Armenian grid emission factors ---------------------------
+# CDM Standardized Baseline ASB0038-2018 v01.0, Table 1: "Grid emission factor
+# for the electricity system of the Republic of Armenia for 2016", adopted by
+# the CDM Executive Board on 19 February 2018, valid to 18 February 2021.
+#
+# Table 1 publishes five factors. Which one applies depends on the project
+# type, so all five are recorded and exactly one is marked active — a verifier
+# can then see that the others were considered rather than overlooked.
+#
+# These are transcribed from a published regulatory document, not chosen. They
+# are still seeded unverified: verified means a person has opened that document
+# and checked the row, and no code can do that on their behalf.
+
+ASB0038_SOURCE = (
+    "CDM Standardized Baseline ASB0038-2018 v01.0, Table 1 — "
+    "Grid emission factor for the electricity system of the Republic of Armenia for 2016"
+)
+ASB0038_URL = "https://cdm.unfccc.int/methodologies/standard_base/index.html"
+ASB0038_VALID_FROM = "2018-02-19"
+ASB0038_VALID_TO = "2021-02-18"
+
+# (value, factor_type, project_types, active)
+ASB0038_ROWS = [
+    (0.4329, "combined_margin",
+     "Wind and solar power generation project activities "
+     "(first, second and third crediting periods)", True),
+    (0.4620, "operating_margin",
+     "All project activities (first, second and third crediting periods)", False),
+    (0.3456, "build_margin",
+     "All project activities (first, second and third crediting periods)", False),
+    (0.4038, "combined_margin",
+     "All project activities except wind and solar power generation "
+     "(first crediting period)", False),
+    (0.3748, "combined_margin",
+     "All project activities except wind and solar power generation "
+     "(second and third crediting periods)", False),
+]
+
+
+def _seed_armenia_baseline(cur) -> None:
+    """Load Table 1 as published. An operator-supplied factor overrides it."""
+    if settings.default_emission_factor > 0:
+        cur.execute(
+            """
+            INSERT INTO gold.emission_factor
+                (value_tco2e_per_mwh, factor_type, project_types, source, source_url,
+                 vintage, valid_from, valid_to, active, verified)
+            VALUES (%s, 'combined_margin', 'Supplied by configuration', %s, %s, %s,
+                    %s, NULL, true, false)
+            """,
+            (
+                settings.default_emission_factor,
+                settings.default_emission_factor_source,
+                settings.default_emission_factor_url or None,
+                settings.default_emission_factor_vintage,
+                settings.emission_factor_valid_from or ASB0038_VALID_FROM,
+            ),
+        )
+        return
+
+    valid_to = settings.emission_factor_valid_to or ASB0038_VALID_TO
+    for value, factor_type, project_types, active in ASB0038_ROWS:
+        cur.execute(
+            """
+            INSERT INTO gold.emission_factor
+                (value_tco2e_per_mwh, factor_type, project_types, source, source_url,
+                 vintage, valid_from, valid_to, active, verified)
+            VALUES (%s, %s, %s, %s, %s, '2016', %s, %s, %s, false)
+            ON CONFLICT DO NOTHING
+            """,
+            (value, factor_type, project_types, ASB0038_SOURCE, ASB0038_URL,
+             ASB0038_VALID_FROM, valid_to, active),
+        )

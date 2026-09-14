@@ -17,6 +17,29 @@ from app.ingest.loader import load_bytes
 router = APIRouter(prefix="/api")
 
 
+def _factor_warning(carbon: dict) -> str | None:
+    """Say plainly why a carbon figure cannot be relied on, if it cannot."""
+    if carbon.get("emission_factor") is None:
+        return (
+            "No emission factor applies to this period, so no reduction is claimed. "
+            "Either the loaded months fall outside the published validity of the "
+            "baseline on file, or no factor has been entered."
+        )
+    if carbon.get("factor_expired"):
+        return (
+            "The emission factor is being applied outside its published validity "
+            f"(the baseline lapsed on {carbon.get('factor_valid_to')}). It is shown "
+            "because ALLOW_EXPIRED_EMISSION_FACTOR is on. A verifier will ask for a "
+            "baseline that covers the crediting period."
+        )
+    if not carbon.get("factor_verified"):
+        return (
+            "The emission factor is unverified — nobody has checked it against the "
+            "source document. This figure is not defensible until they have."
+        )
+    return None
+
+
 def require_token(x_admin_token: str | None = Header(default=None)) -> None:
     """Open by default. Set ADMIN_TOKEN to require a token on writes."""
     if not settings.admin_token:
@@ -40,11 +63,31 @@ def health() -> dict:
 @router.get("/context")
 def context() -> dict:
     """Banner, assumptions and reference data — shown on every screen."""
+    assumptions = settings.assumptions()
+    active = query_one(
+        """
+        SELECT value_tco2e_per_mwh, factor_type, source, vintage, valid_from, valid_to,
+               project_types, verified
+        FROM gold.emission_factor WHERE active ORDER BY valid_from DESC LIMIT 1
+        """
+    )
+    for item in assumptions:
+        if item["key"] != "emission_factor":
+            continue
+        if not active:
+            break
+        item["value"] = f"{float(active['value_tco2e_per_mwh']):g} tCO2e/MWh"
+        item["note"] = (
+            f"{active['source']} — {active['factor_type'].replace('_', ' ')}, "
+            f"valid {active['valid_from']} to {active['valid_to'] or 'open'}"
+            + ("" if active["verified"] else ". Unverified: nobody has checked it "
+                                             "against that document yet.")
+        )
     return {
         "banner": settings.banner_text,
         "fleet_name": settings.fleet_name,
         "env": settings.app_env,
-        "assumptions": settings.assumptions(),
+        "assumptions": assumptions,
         "emission_factors": query(
             "SELECT * FROM gold.emission_factor ORDER BY valid_from DESC"
         ),
@@ -83,7 +126,7 @@ def river() -> dict:
     ) or {}
     streams = query("SELECT * FROM silver.exclusion_summary ORDER BY excluded_kwh DESC")
     credits = query_one(
-        "SELECT COALESCE(SUM(irec_issued),0) AS irec_issued FROM gold.irec"
+        "SELECT COALESCE(SUM(vcu_issued),0) AS vcu_issued FROM gold.vcu"
     ) or {}
     carbon = query_one(
         "SELECT COALESCE(SUM(net_reduction_tco2e),0) AS net_reduction_tco2e FROM gold.carbon"
@@ -96,7 +139,7 @@ def river() -> dict:
         "generation_kwh": total.get("generation_kwh", 0),
         "eligible_kwh": total.get("eligible_kwh", 0),
         "exclusions": streams,
-        "irec_issued": credits.get("irec_issued", 0),
+        "vcu_issued": credits.get("vcu_issued", 0),
         "net_reduction_tco2e": carbon.get("net_reduction_tco2e", 0),
         "total_revenue": revenue.get("total_revenue", 0),
         "currency": revenue.get("currency") or settings.price_currency,
@@ -112,7 +155,7 @@ def drill_months() -> list[dict]:
         SELECT f.month,
                f.generation_kwh, f.eligible_kwh, f.excluded_kwh,
                f.site_count, f.days_missing, f.days_suspect, f.worst_flag,
-               COALESCE(g.irec_issued, 0)          AS irec_issued,
+               COALESCE(g.vcu_issued, 0)           AS vcu_issued,
                COALESCE(g.net_reduction_tco2e, 0)  AS net_reduction_tco2e,
                COALESCE(g.total_revenue, 0)        AS total_revenue
         FROM silver.fleet_month f
@@ -120,7 +163,7 @@ def drill_months() -> list[dict]:
         -- one pass over the chain rather than three.
         LEFT JOIN (
             SELECT month,
-                   SUM(irec_issued)         AS irec_issued,
+                   SUM(vcu_issued)          AS vcu_issued,
                    SUM(net_reduction_tco2e) AS net_reduction_tco2e,
                    SUM(total_revenue)       AS total_revenue
             FROM gold.revenue GROUP BY month
@@ -137,7 +180,7 @@ def drill_sites(month: dt.date) -> list[dict]:
         SELECT sm.plant_name, sm.generation_kwh, sm.eligible_kwh, sm.excluded_kwh,
                sm.days_expected, sm.days_with_data, sm.days_missing,
                sm.days_suspect, sm.worst_flag,
-               COALESCE(g.irec_issued, 0)         AS irec_issued,
+               COALESCE(g.vcu_issued, 0)          AS vcu_issued,
                COALESCE(g.net_reduction_tco2e, 0) AS net_reduction_tco2e,
                s.installed_kwp
         FROM silver.site_month sm
@@ -203,14 +246,16 @@ def lineage(
     """Any gold figure to the cells underneath it, in one call."""
     gold_row = query_one(
         """
-        SELECT i.plant_name, i.month, i.eligible_kwh, i.eligible_mwh, i.irec_issued,
-               i.carry_in_mwh, i.carry_forward_mwh,
-               c.emission_factor, c.factor_source, c.factor_vintage, c.factor_valid_from,
-               c.net_reduction_tco2e, r.total_revenue, r.currency
-        FROM gold.irec i
-        LEFT JOIN gold.carbon  c ON c.plant_name = i.plant_name AND c.month = i.month
-        LEFT JOIN gold.revenue r ON r.plant_name = i.plant_name AND r.month = i.month
-        WHERE i.plant_name = %s AND i.month = %s
+        SELECT v.plant_name, v.month, v.eligible_kwh, v.eligible_mwh, v.vcu_issued,
+               v.carry_in_tco2e, v.carry_forward_tco2e, v.net_reduction_tco2e,
+               v.emission_factor, v.factor_verified, v.factor_expired,
+               c.factor_source, c.factor_source_url, c.factor_vintage,
+               c.factor_valid_from, c.factor_valid_to, c.factor_project_types,
+               r.total_revenue, r.currency
+        FROM gold.vcu v
+        LEFT JOIN gold.carbon  c ON c.plant_name = v.plant_name AND c.month = v.month
+        LEFT JOIN gold.revenue r ON r.plant_name = v.plant_name AND r.month = v.month
+        WHERE v.plant_name = %s AND v.month = %s
         """,
         (plant_name, month),
     )
@@ -264,9 +309,21 @@ def calculation(month: dt.date | None = None) -> dict:
         """,
         (month, month),
     ) or {}
-    irec = query_one(
-        "SELECT COALESCE(SUM(irec_issued),0) AS irec_issued FROM gold.irec "
-        "WHERE (%s::date IS NULL OR month = %s)",
+    vcu = query_one(
+        """
+        WITH scoped AS (
+            SELECT plant_name, month, vcu_issued, carry_forward_tco2e,
+                   ROW_NUMBER() OVER (PARTITION BY plant_name ORDER BY month DESC) AS recency
+            FROM gold.vcu
+            WHERE (%s::date IS NULL OR month = %s)
+        )
+        SELECT COALESCE(SUM(vcu_issued), 0) AS vcu_issued,
+               -- the balance standing at the end of the period, per site,
+               -- not the sum of every month's running balance
+               COALESCE(SUM(carry_forward_tco2e) FILTER (WHERE recency = 1), 0)
+                   AS carry_forward_tco2e
+        FROM scoped
+        """,
         (month, month),
     ) or {}
     carbon = query_one(
@@ -278,7 +335,10 @@ def calculation(month: dt.date | None = None) -> dict:
                MAX(factor_vintage)  AS factor_vintage,
                MAX(factor_valid_from) AS factor_valid_from,
                MAX(factor_type)     AS factor_type,
+               MAX(factor_project_types) AS factor_project_types,
+               MAX(factor_valid_to)  AS factor_valid_to,
                bool_and(COALESCE(factor_verified, false)) AS factor_verified,
+               bool_or(COALESCE(factor_expired, false))   AS factor_expired,
                count(*) FILTER (WHERE emission_factor IS NULL) AS months_without_factor
         FROM gold.carbon WHERE (%s::date IS NULL OR month = %s)
         """,
@@ -286,11 +346,9 @@ def calculation(month: dt.date | None = None) -> dict:
     ) or {}
     revenue = query_one(
         """
-        SELECT COALESCE(SUM(irec_revenue),0) AS irec_revenue,
-               COALESCE(SUM(vcu_revenue),0)  AS vcu_revenue,
-               COALESCE(SUM(total_revenue),0) AS total_revenue,
-               MAX(irec_price_per_mwh) AS irec_price_per_mwh,
+        SELECT COALESCE(SUM(total_revenue),0) AS total_revenue,
                MAX(vcu_price_per_tco2e) AS vcu_price_per_tco2e,
+               MAX(vcu_price_source)    AS vcu_price_source,
                MAX(currency) AS currency
         FROM gold.revenue WHERE (%s::date IS NULL OR month = %s)
         """,
@@ -302,7 +360,7 @@ def calculation(month: dt.date | None = None) -> dict:
         "month": month.isoformat() if month else None,
         **totals,
         "eligible_mwh": eligible_mwh,
-        **irec,
+        **vcu,
         **carbon,
         **revenue,
         "currency": revenue.get("currency") or settings.price_currency,
@@ -315,19 +373,12 @@ def calculation(month: dt.date | None = None) -> dict:
                 "source": "silver.eligibility",
             },
             {
-                "label": "I-REC issuable",
-                "formula": "floor( cumulative eligible MWh ) − already issued",
-                "substituted": f"eligible {eligible_mwh:,.3f} MWh, whole units only, remainder carried forward",
-                "result": f"{float(irec.get('irec_issued') or 0):,.0f} I-REC",
-                "source": "gold.irec",
-            },
-            {
-                "label": "Carbon reduction",
+                "label": "Emission reduction",
                 "formula": "eligible_MWh × emission_factor − project_emissions − leakage",
                 "substituted": (
                     f"{eligible_mwh:,.3f} × {float(carbon.get('emission_factor') or 0):g} − 0 − 0"
                     if carbon.get("emission_factor") is not None
-                    else f"{eligible_mwh:,.3f} × (no emission factor set)"
+                    else f"{eligible_mwh:,.3f} × (no applicable emission factor)"
                 ),
                 "result": (
                     f"{float(carbon.get('net_reduction_tco2e') or 0):,.3f} tCO₂e"
@@ -335,18 +386,37 @@ def calculation(month: dt.date | None = None) -> dict:
                     else "not calculable"
                 ),
                 "source": "gold.carbon",
-                "warning": (
-                    None if carbon.get("factor_verified")
-                    else "The emission factor is unverified — nobody has checked it against a "
-                         "source document. This figure is not defensible until they have."
+                "warning": _factor_warning(carbon),
+            },
+            {
+                "label": "VCUs issuable",
+                "formula": "floor( cumulative tCO₂e ) − already issued",
+                "substituted": (
+                    f"{float(carbon.get('net_reduction_tco2e') or 0):,.3f} tCO₂e, whole tonnes only, "
+                    f"{float(vcu.get('carry_forward_tco2e') or 0):,.3f} carried forward"
                 ),
+                "result": f"{float(vcu.get('vcu_issued') or 0):,.0f} VCU",
+                "source": "gold.vcu",
             },
             {
                 "label": "Indicative revenue",
-                "formula": "I-REC × price_per_MWh + tCO₂e × price_per_tCO₂e",
-                "substituted": f"{float(irec.get('irec_issued') or 0):,.0f} × {float(revenue.get('irec_price_per_mwh') or 0):g} + {float(carbon.get('net_reduction_tco2e') or 0):,.3f} × {float(revenue.get('vcu_price_per_tco2e') or 0):g}",
-                "result": f"{revenue.get('currency') or settings.price_currency} {float(revenue.get('total_revenue') or 0):,.2f}",
+                "formula": "VCU × price_per_tCO₂e",
+                "substituted": (
+                    f"{float(vcu.get('vcu_issued') or 0):,.0f} × {float(revenue.get('vcu_price_per_tco2e') or 0):g}"
+                    if revenue.get("vcu_price_per_tco2e") is not None
+                    else f"{float(vcu.get('vcu_issued') or 0):,.0f} × (no VCU price set)"
+                ),
+                "result": (
+                    f"{revenue.get('currency') or settings.price_currency} {float(revenue.get('total_revenue') or 0):,.2f}"
+                    if revenue.get("vcu_price_per_tco2e") is not None
+                    else "not calculable"
+                ),
                 "source": "gold.revenue",
+                "warning": (
+                    None if revenue.get("vcu_price_per_tco2e") is not None
+                    else "No VCU price is set, so no revenue is shown. Set DEFAULT_VCU_PRICE_PER_TCO2E "
+                         "with the quote or index it came from."
+                ),
             },
         ],
     }

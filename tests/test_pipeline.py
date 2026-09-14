@@ -46,6 +46,34 @@ def clean():
     yield
 
 
+
+@pytest.fixture
+def factor_for_2025():
+    """A factor whose published validity covers the test data."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE gold.emission_factor SET active = false")
+        cur.execute(
+            """
+            INSERT INTO gold.emission_factor
+                (value_tco2e_per_mwh, factor_type, project_types, source, vintage,
+                 valid_from, valid_to, active, verified)
+            VALUES (0.4329, 'combined_margin', 'test', 'test fixture', '2016',
+                    DATE '2024-01-01', DATE '2026-12-31', true, false)
+            RETURNING factor_id
+            """
+        )
+        fid = cur.fetchone()["factor_id"]
+        conn.commit()
+    yield 0.4329
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM gold.emission_factor WHERE factor_id = %s", (fid,))
+        cur.execute(
+            "UPDATE gold.emission_factor SET active = true "
+            "WHERE project_types LIKE 'Wind and solar%%'"
+        )
+        conn.commit()
+
+
 def book(rows, title="Daily Yield(kWh)") -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -155,27 +183,29 @@ def test_energy_before_grid_connection_does_not_earn():
     assert float(second["eligible_kwh"]) == 100.0
 
 
-def test_irec_carries_the_remainder_forward_instead_of_rounding_it_away():
-    # 1500 kWh in January and 1700 in February: 1.5 MWh then 1.7 MWh.
-    # Month 1 issues 1 and carries 0.5; month 2 has 0.5 + 1.7 = 2.2, issues 2.
-    jan = [1500.0] + [0.0] * 30
-    feb = [1700.0] + [0.0] * 27
+def test_vcu_carries_the_remainder_forward_instead_of_rounding_it_away(factor_for_2025):
+    """A VCU is one whole tonne; the fraction rolls on rather than vanishing."""
+    # 5,000 kWh in January and 7,000 in February at 0.4329 tCO2e/MWh gives
+    # 2.1645 then 3.0303 tonnes. Month 1 issues 2 and carries 0.1645; month 2
+    # has 0.1645 + 3.0303 = 3.1948, so it issues 3 and carries 0.1948.
+    jan = [5000.0] + [0.0] * 30
+    feb = [7000.0] + [0.0] * 27
     days = ([dt.date(2025, 1, 1) + dt.timedelta(days=i) for i in range(31)]
             + [dt.date(2025, 2, 1) + dt.timedelta(days=i) for i in range(28)])
     data = book([
         ["Daily Yield Report (kWh)"],
         ["Plant Name", "Installed Capacity(kWp)", "Grid Connection Date", "Plant Status"] + days,
-        ["Site A", 5000.0, dt.date(2024, 1, 1), "Normal"] + jan + feb,
+        ["Site A", 20000.0, dt.date(2024, 1, 1), "Normal"] + jan + feb,
     ])
     load_bytes(data, "carry.xlsx")
 
-    rows = query("SELECT month, irec_issued, carry_forward_mwh FROM gold.irec ORDER BY month")
-    assert [int(r["irec_issued"]) for r in rows] == [1, 2]
-    assert float(rows[0]["carry_forward_mwh"]) == pytest.approx(0.5)
-    assert float(rows[1]["carry_forward_mwh"]) == pytest.approx(0.2)
-    # Nothing is lost: total issued never exceeds total eligible.
-    total = query_one("SELECT SUM(eligible_kwh)/1000 mwh, SUM(irec_issued) issued FROM gold.irec")
-    assert float(total["issued"]) <= float(total["mwh"])
+    rows = query("SELECT month, vcu_issued, carry_forward_tco2e FROM gold.vcu ORDER BY month")
+    assert [int(r["vcu_issued"]) for r in rows] == [2, 3]
+    assert float(rows[0]["carry_forward_tco2e"]) == pytest.approx(0.1645, abs=1e-4)
+    assert float(rows[1]["carry_forward_tco2e"]) == pytest.approx(0.1948, abs=1e-4)
+    # Nothing is issued that was not reduced.
+    total = query_one("SELECT SUM(net_reduction_tco2e) t, SUM(vcu_issued) v FROM gold.vcu")
+    assert float(total["v"]) <= float(total["t"])
 
 
 def test_lineage_reaches_the_cell():
@@ -194,18 +224,43 @@ def test_lineage_reaches_the_cell():
     assert float(row["cell_value"]) == 200.0
 
 
-def test_carbon_uses_the_dated_factor_not_a_constant():
+def test_carbon_uses_the_dated_factor_not_a_constant(factor_for_2025):
     # 1000 kWh on 500 kWp is 2 kWh/kWp/day — comfortably plausible, so the day
     # is eligible and the factor is what decides the answer.
     load_bytes(wide([1000.0], kwp=500.0), "carbon.xlsx")
     row = query_one("SELECT emission_factor, factor_vintage, net_reduction_tco2e FROM gold.carbon")
-    factor = query_one(
-        "SELECT value_tco2e_per_mwh v FROM gold.emission_factor "
-        "WHERE valid_from <= DATE '2025-01-31' AND (valid_to IS NULL OR valid_to >= DATE '2025-01-01') "
-        "ORDER BY valid_from DESC LIMIT 1"
-    )
-    assert float(row["emission_factor"]) == float(factor["v"])
-    assert float(row["net_reduction_tco2e"]) == pytest.approx(1.0 * float(factor["v"]))
+    assert float(row["emission_factor"]) == pytest.approx(factor_for_2025)
+    assert float(row["net_reduction_tco2e"]) == pytest.approx(1.0 * factor_for_2025)
+
+
+def test_only_the_active_factor_drives_the_number(factor_for_2025):
+    """Table 1 publishes several margins; only the applicable one may be used."""
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO gold.emission_factor
+                (value_tco2e_per_mwh, factor_type, project_types, source, vintage,
+                 valid_from, valid_to, active, verified)
+            VALUES (0.9999, 'operating_margin', 'not this one', 'test fixture', '2016',
+                    DATE '2024-01-01', DATE '2026-12-31', false, false)
+            """
+        )
+        conn.commit()
+    load_bytes(wide([1000.0], kwp=500.0), "active.xlsx")
+    row = query_one("SELECT emission_factor FROM gold.carbon")
+    assert float(row["emission_factor"]) == pytest.approx(factor_for_2025)
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM gold.emission_factor WHERE value_tco2e_per_mwh = 0.9999")
+        conn.commit()
+
+
+def test_a_lapsed_baseline_yields_no_claim_by_default():
+    """The seeded Armenian baseline lapsed in 2021; the data here is 2025."""
+    load_bytes(wide([1000.0], kwp=500.0), "lapsed.xlsx")
+    row = query_one("SELECT emission_factor, net_reduction_tco2e FROM gold.carbon")
+    assert row["emission_factor"] is None
+    assert row["net_reduction_tco2e"] is None
+    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
 
 
 def test_inactive_site_energy_is_excluded_with_its_own_reason():
@@ -255,21 +310,22 @@ def test_without_a_factor_carbon_is_absent_rather_than_guessed(no_emission_facto
     assert query_one("SELECT COUNT(*) n FROM gold.emission_factor")["n"] == 0
 
 
-def test_energy_and_irecs_do_not_depend_on_the_factor(no_emission_factor):
-    load_bytes(wide([1500.0] + [0.0] * 30, kwp=5000.0), "irec-nofactor.xlsx")
-    row = query_one("SELECT SUM(eligible_kwh) kwh, SUM(irec_issued) issued FROM gold.irec")
+def test_energy_does_not_depend_on_the_factor(no_emission_factor):
+    """A missing factor withholds the carbon claim; it must not touch the energy."""
+    load_bytes(wide([1500.0] + [0.0] * 30, kwp=5000.0), "nofactor.xlsx")
+    row = query_one("SELECT SUM(eligible_kwh) kwh FROM silver.site_month")
     assert float(row["kwh"]) == 1500.0
-    assert int(row["issued"]) == 1
+    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
 
 
 def test_a_factor_is_unverified_until_a_person_says_otherwise():
     rows = query("SELECT factor_id, verified FROM gold.emission_factor")
-    assert rows, "expected at least one seeded factor in this database"
+    assert rows, "expected the published baseline to be seeded"
     # Nothing in the code path may set verified = true; only a person does.
     assert all(r["verified"] is False for r in rows)
 
 
-def test_the_verified_flag_travels_with_the_number_it_produced():
+def test_the_verified_flag_travels_with_the_number_it_produced(factor_for_2025):
     load_bytes(wide([1000.0], kwp=500.0), "verified.xlsx")
     row = query_one("SELECT factor_verified, net_reduction_tco2e FROM gold.carbon")
     assert row["factor_verified"] is False
