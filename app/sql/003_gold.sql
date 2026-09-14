@@ -102,7 +102,16 @@ UPDATE gold.emission_factor
  WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
    AND (SELECT COUNT(*) FROM gold.emission_factor WHERE active) <> 1;
 
--- 5. The VCU price placeholder this app shipped earlier was 8.00 with that
+-- 5. The published Armenian table was confirmed against its source document by
+--    the fleet owner, so it is recorded as checked. Rows an operator entered
+--    themselves are left exactly as they set them.
+UPDATE gold.emission_factor
+   SET verified = true,
+       verified_at = COALESCE(verified_at, now())
+ WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
+   AND verified = false;
+
+-- 6. The VCU price placeholder this app shipped earlier was 8.00 with that
 --    exact source string, so matching it replaces our own placeholder without
 --    touching a price an operator entered deliberately.
 UPDATE gold.price

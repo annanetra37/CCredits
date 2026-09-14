@@ -117,12 +117,14 @@ async function loadOverview() {
     ]);
 
     const cur = flow.currency || 'USD';
+    // Capacity has a card of its own now, so the line above no longer repeats it.
     el('contextLine').textContent =
-        `${fmt(summary.site_count)} sites · ${fmt(summary.installed_kwp, 0)} kWp installed · `
-        + `${fmt(summary.days_with_data)} days of readings · `
+        `${fmt(summary.days_with_data)} days of readings · `
         + `${summary.window_start || '—'} to ${summary.window_end || '—'}`;
 
     el('kpis').innerHTML = [
+        ['Installed capacity', fmt(summary.installed_kwp, 0), 'kWp',
+         `across ${fmt(summary.site_count)} sites`],
         ['Energy generated', fmt(summary.generation_kwh), 'kWh',
          'everything the sites produced'],
         ['CO₂ avoided', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
@@ -196,7 +198,8 @@ function renderContext() {
                         <span class="input-unit">tCO₂e per MWh</span></div>
                 </div>
                 ${active.verified
-                    ? '<span class="pill ok">checked</span>'
+                    ? `<span class="pill ok" title="Checked against the source document${
+                          active.verified_by ? ' by ' + esc(active.verified_by) : ''}">checked</span>`
                     : '<span class="pill missing">not yet checked</span>'}
             </div>
             <div class="input-why">Every MWh of solar generated displaces a MWh the Armenian grid
