@@ -198,7 +198,8 @@ function renderContext() {
                         <span class="input-unit">tCO₂e per MWh</span></div>
                 </div>
                 ${active.verified
-                    ? '<span class="pill ok">checked</span>'
+                    ? `<span class="pill ok" title="Checked against the source document${
+                          active.verified_by ? ' by ' + esc(active.verified_by) : ''}">checked</span>`
                     : '<span class="pill missing">not yet checked</span>'}
             </div>
             <div class="input-why">Every MWh of solar generated displaces a MWh the Armenian grid

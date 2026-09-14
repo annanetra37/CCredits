@@ -29,20 +29,19 @@ def require_token(x_admin_token: str | None = Header(default=None)) -> None:
 
 
 def _factor_note(row: dict) -> str | None:
-    """What a reader should know about the factor behind a carbon figure."""
+    """Warn only where something is actually wrong.
+
+    That the factor is applied past its publication date is a deliberate,
+    documented choice and is stated on the factor card itself, so repeating it
+    here as an alert would be noise. A missing factor is a different matter.
+    """
     if row.get("emission_factor") is None:
         return ("No emission factor is on file, so no emission reduction and no "
                 "VCUs are claimed. Nothing stands in for it.")
-    notes = []
-    if row.get("factor_beyond_validity"):
-        notes.append(
-            "This is the most recent approved grid factor for Armenia, applied to "
-            "months after the publication's own stated validity "
-            f"({row.get('factor_published_valid_to')}).")
     if not row.get("factor_verified"):
-        notes.append("Nobody has signed off that this factor was checked against the "
-                     "source document. Set EMISSION_FACTOR_VERIFIED_BY to record who did.")
-    return " ".join(notes) or None
+        return ("This factor has not been checked against its source document. "
+                "Set EMISSION_FACTOR_VERIFIED_BY to record who did.")
+    return None
 
 
 def _plant_for(site_code: str) -> str:

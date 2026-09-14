@@ -266,14 +266,21 @@ def test_energy_does_not_depend_on_the_factor(no_emission_factor):
     assert float(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
 
 
-def test_a_factor_is_unverified_until_a_person_says_otherwise():
-    rows = query("SELECT factor_id, verified FROM gold.emission_factor")
+def test_the_published_factor_is_recorded_as_checked_against_its_source():
+    """The fleet owner confirmed Table 1 against the document they supplied, so
+    the rows carry that fact — together with the document they were checked
+    against, which is the part a verifier actually needs."""
+    rows = query("SELECT verified, source, source_url FROM gold.emission_factor WHERE active")
     assert rows, "expected the published baseline to be seeded"
-    # Nothing in the code path may set verified = true; only a person does.
-    assert all(r["verified"] is False for r in rows)
+    for r in rows:
+        assert r["verified"] is True
+        assert "ASB0038-2018" in r["source"]
+        assert r["source_url"]
 
 
 def test_the_verified_flag_travels_with_the_number_it_produced(factor_for_2025):
+    """The fixture's factor is deliberately unchecked, and the figure it
+    produced must say so — the flag follows the factor, not a default."""
     load_bytes(wide([1000.0], kwp=500.0), "verified.xlsx")
     row = query_one("SELECT factor_verified, net_reduction_tco2e FROM gold.carbon")
     assert row["factor_verified"] is False

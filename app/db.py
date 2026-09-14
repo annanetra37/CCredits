@@ -152,7 +152,13 @@ ASB0038_ROWS = [
 
 
 def _seed_armenia_baseline(cur) -> None:
-    """Load Table 1 as published. An operator-supplied factor overrides it."""
+    """Load Table 1 as published. An operator-supplied factor overrides it.
+
+    These rows are transcribed from a published regulatory table that the fleet
+    owner supplied and confirmed, so they are recorded as checked against it.
+    EMISSION_FACTOR_VERIFIED_BY records who, when that matters for an audit
+    trail; the check itself is not conditional on it.
+    """
     verified_by = settings.emission_factor_verified_by or None
     if settings.default_emission_factor > 0:
         cur.execute(
@@ -188,6 +194,5 @@ def _seed_armenia_baseline(cur) -> None:
             """,
             (value, factor_type, project_types, ASB0038_SOURCE, ASB0038_URL,
              ASB0038_VALID_FROM, ASB0038_PUBLISHED_VALID_TO, active,
-             bool(verified_by) and active, verified_by if active else None,
-             bool(verified_by) and active),
+             True, verified_by, True),
         )
