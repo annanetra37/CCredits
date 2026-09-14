@@ -111,7 +111,17 @@ UPDATE gold.emission_factor
  WHERE source LIKE 'CDM Standardized Baseline ASB0038-2018%'
    AND verified = false;
 
--- 6. The VCU price placeholder this app shipped earlier was 8.00 with that
+-- 6. Source text seeded by an earlier version carries em dashes, which are
+--    rendered verbatim on the factor and price cards. Changing the code only
+--    affects a fresh seed, so existing rows are rewritten here.
+UPDATE gold.emission_factor
+   SET source = replace(source, ' — ', ', ')
+ WHERE source LIKE '%—%';
+UPDATE gold.price
+   SET source = replace(source, ' — ', ', ')
+ WHERE source LIKE '%—%';
+
+-- 7. The VCU price placeholder this app shipped earlier was 8.00 with that
 --    exact source string, so matching it replaces our own placeholder without
 --    touching a price an operator entered deliberately.
 UPDATE gold.price

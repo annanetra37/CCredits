@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # --- Azure Blob Storage -----------------------------------------------
     # Either a connection string, or an account name with a managed identity
-    # (no secret in configuration at all — the preferred arrangement on Azure).
+    # (no secret in configuration at all, the preferred arrangement on Azure).
     azure_storage_connection_string: str = Field(
         default="", alias="AZURE_STORAGE_CONNECTION_STRING"
     )
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     default_emission_factor: float = Field(default=0.0, alias="DEFAULT_EMISSION_FACTOR")
     emission_factor_verified_by: str = Field(default="", alias="EMISSION_FACTOR_VERIFIED_BY")
     default_emission_factor_source: str = Field(
-        default="UNVERIFIED — no source document supplied",
+        default="UNVERIFIED, no source document supplied",
         alias="DEFAULT_EMISSION_FACTOR_SOURCE",
     )
     default_emission_factor_url: str = Field(default="", alias="DEFAULT_EMISSION_FACTOR_URL")
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     default_vcu_price: float = Field(default=3.0, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
     price_currency: str = Field(default="USD", alias="PRICE_CURRENCY")
     vcu_price_source: str = Field(
-        default="Indicative pilot pricing — conservative end of the VCU range",
+        default="Indicative pilot pricing, conservative end of the VCU range",
         alias="VCU_PRICE_SOURCE",
     )
 
@@ -146,7 +146,7 @@ class Settings(BaseSettings):
                     self.default_emission_factor_source
                     if self.default_emission_factor > 0
                     else "Still outstanding. Carbon and carbon revenue read zero until a "
-                         "sourced factor is entered — no placeholder stands in for it."
+                         "sourced factor is entered, no placeholder stands in for it."
                 ),
                 "env": "DEFAULT_EMISSION_FACTOR",
             },

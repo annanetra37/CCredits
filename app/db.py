@@ -89,7 +89,7 @@ def sync_parameters() -> None:
 
 
 def seed_reference_data() -> None:
-    """Two rows each, as the task list asks. Only inserted if absent — an
+    """Two rows each, as the task list asks. Only inserted if absent, an
     operator who edits a factor in the database keeps their edit."""
     with connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM gold.emission_factor")
@@ -115,7 +115,7 @@ def seed_reference_data() -> None:
 # the CDM Executive Board on 19 February 2018, valid to 18 February 2021.
 #
 # Table 1 publishes five factors. Which one applies depends on the project
-# type, so all five are recorded and exactly one is marked active — a verifier
+# type, so all five are recorded and exactly one is marked active, a verifier
 # can then see that the others were considered rather than overlooked.
 #
 # These are transcribed from a published regulatory document, not chosen. They
@@ -123,13 +123,13 @@ def seed_reference_data() -> None:
 # and checked the row, and no code can do that on their behalf.
 
 ASB0038_SOURCE = (
-    "CDM Standardized Baseline ASB0038-2018 v01.0, Table 1 — "
+    "CDM Standardized Baseline ASB0038-2018 v01.0, Table 1, "
     "Grid emission factor for the electricity system of the Republic of Armenia for 2016"
 )
 ASB0038_URL = "https://environment.gov.am/api/assets/7e4407a1-eac6-4aed-bc8e-3ce5e1256a40"
 ASB0038_VALID_FROM = "2018-02-19"
 # What the document itself says. The factor is still applied after this
-# date — it is the most recent approved baseline for Armenia — and the
+# date, it is the most recent approved baseline for Armenia, and the
 # portal shows both dates so the difference is never hidden.
 ASB0038_PUBLISHED_VALID_TO = "2021-02-18"
 

@@ -37,8 +37,8 @@ const failed = (id, err, cols) => {
 // The encoding colours live in the stylesheet as validated tokens; read them
 // rather than restating them, so the palette has exactly one definition.
 const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-// Decorative washes for the stat tiles. These carry no meaning — every tile is
-// titled — so they are free to be soft and colourful.
+// Decorative washes for the stat tiles. These carry no meaning, every tile is
+// titled, so they are free to be soft and colourful.
 const TILE_TINTS = ['--accent-wash', '--eligible-wash', '--violet-wash',
                     '--gold-wash', '--rose-wash', '--eligible-wash'];
 
@@ -71,7 +71,7 @@ function drawFlow(d) {
     const gen = num(d.generation_kwh);
     if (gen <= 0) {
         svg.innerHTML = `<text x="500" y="125" text-anchor="middle" class="flow-sub">`
-            + `No data yet — connect your solar data to fill this in.</text>`;
+            + `No data yet, connect your solar data to fill this in.</text>`;
         return;
     }
     const green = token('--eligible'), accent = token('--accent'), violet = token('--pregrid');
@@ -98,7 +98,7 @@ function drawFlow(d) {
               fmt(d.generation_kwh) + ' kWh', fmt(d.generation_mwh, 1) + ' MWh')}
         ${arrow(318, ef)}
         ${box(385, 260, token('--violet-wash'), violet, 'EMISSION REDUCTION',
-              d.net_reduction_tco2e === null ? '—' : fmt(d.net_reduction_tco2e, 2),
+              d.net_reduction_tco2e === null ? '' : fmt(d.net_reduction_tco2e, 2),
               'tonnes of CO₂ avoided')}
         ${arrow(655, '1 : 1')}
         ${box(725, 235, token('--eligible-wash'), green, 'CREDITS (VCUS)',
@@ -120,28 +120,33 @@ async function loadOverview() {
     // Capacity has a card of its own now, so the line above no longer repeats it.
     el('contextLine').textContent =
         `${fmt(summary.days_with_data)} days of readings · `
-        + `${summary.window_start || '—'} to ${summary.window_end || '—'}`;
+        + `${summary.window_start || ''} to ${summary.window_end || ''}`;
 
+    // Each card leads where a reader would expect: capacity to the site list,
+    // energy to the energy screen, the credit figures to the month breakdown.
     el('kpis').innerHTML = [
         ['Installed capacity', fmt(summary.installed_kwp, 0), 'kWp',
-         `across ${fmt(summary.site_count)} sites`],
+         `across ${fmt(summary.site_count)} sites`, 'screen:fleet'],
         ['Energy generated', fmt(summary.generation_kwh), 'kWh',
-         'everything the sites produced'],
-        ['CO₂ avoided', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
-         'energy × the Armenian grid factor'],
+         'everything the sites produced', 'screen:energy'],
+        ['CO₂ avoided', summary.net_reduction_tco2e === null ? '' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
+         'energy × the Armenian grid factor', 'months'],
         ['Credits earned', fmt(summary.vcu_issued, 2), 'VCUs',
-         'one tonne avoided is one credit'],
+         'one tonne avoided is one credit', 'months'],
         [`Indicative value`, `${cur} ${fmt(summary.total_revenue, 0)}`, '',
-         `at ${cur} ${fmt(calc.vcu_price_per_tco2e, 0)} per tonne`],
-    ].map(([label, value, unit, foot], i) => `
-        <div class="kpi-card clickable" data-open="months"
+         `at ${cur} ${fmt(calc.vcu_price_per_tco2e, 0)} per tonne`, 'screen:ledger'],
+    ].map(([label, value, unit, foot, go], i) => `
+        <div class="kpi-card clickable" data-go="${go}"
              style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
             <div class="label">${label}</div>
             <div class="value">${value}<span class="unit">${unit}</span></div>
             <div class="foot">${foot}</div>
         </div>`).join('');
 
-    el('kpis').querySelectorAll('[data-open="months"]').forEach((c) => { c.onclick = () => openMonths(); });
+    el('kpis').querySelectorAll('[data-go]').forEach((c) => {
+        const go = c.dataset.go;
+        c.onclick = () => (go.startsWith('screen:') ? goto_(go.slice(7)) : openMonths());
+    });
 
     const loaded = num(summary.generation_kwh) > 0;
     el('emptyState').hidden = loaded;
@@ -169,7 +174,7 @@ async function loadOverview() {
             <tr class="clickable" data-month="${m.month}">
                 <td>${monthName(m.month)}</td>
                 <td class="num">${fmt(m.generation_kwh)}</td>
-                <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${m.net_reduction_tco2e === null ? '' : fmt(m.net_reduction_tco2e, 2)}</td>
                 <td class="num">${fmt(m.vcu_issued, 2)}</td>
                 <td class="num">${cur} ${fmt(m.total_revenue, 0)}</td>
             </tr>`).join('') || `<tr><td colspan="8" class="empty">No data loaded yet.</td></tr>`}
@@ -203,11 +208,11 @@ function renderContext() {
                     : '<span class="pill missing">not yet checked</span>'}
             </div>
             <div class="input-why">Every MWh of solar generated displaces a MWh the Armenian grid
-                would otherwise have supplied. This is how much CO₂ that MWh would have emitted —
+                would otherwise have supplied. This is how much CO₂ that MWh would have emitted,
                 which is what makes the generation worth a credit.</div>
             <div class="input-src">
                 ${esc(active.source)}<br>
-                Applies to: ${esc(active.project_types || '—')}<br>
+                Applies to: ${esc(active.project_types || '')}<br>
                 ${active.published_valid_to
                     ? `Publication's stated validity ends ${esc(active.published_valid_to)}; applied beyond it as the most recent approved baseline for Armenia.`
                     : ''}
@@ -228,7 +233,7 @@ function renderContext() {
                 <span class="pill grey">indicative</span>
             </div>
             <div class="input-why">One VCU is one tonne of CO₂ avoided. This is what a tonne is
-                assumed to sell for, and it only affects the revenue figure — never the number
+                assumed to sell for, and it only affects the revenue figure, never the number
                 of credits.</div>
             <div class="input-src">${esc(price.source || '')} · as of ${esc(price.as_of)}</div>
         </div>` : `<div class="empty">No VCU price set, so no revenue is shown.</div>`;
@@ -243,7 +248,7 @@ function renderContext() {
                     <td>${esc(f.project_types || '')}</td></tr>`).join('')}
             </tbody></table></div>
             <div class="input-src" style="margin-top:8px">Recorded so it is visible that they were
-                considered. Only the one above is applied — it is the row for solar generation.</div>
+                considered. Only the one above is applied, it is the row for solar generation.</div>
         </details>` : '';
 
     el('reference').innerHTML = factorBlock + priceBlock + otherBlock;
@@ -312,8 +317,8 @@ async function loadEnergy() {
             <tr>
                 <td>${esc(label(r.bucket))}</td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
-                <td class="num">${r.installed_kwp === null ? '—' : fmt(r.installed_kwp, 0)}</td>
-                <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
+                <td class="num">${r.installed_kwp === null ? '' : fmt(r.installed_kwp, 0)}</td>
+                <td class="num">${r.specific_yield_per_day === null ? '' : fmt(r.specific_yield_per_day, 2)}</td>
                 <td class="num">${fmt(r.days_with_data)}</td>
                 <td class="num">${fmt(r.site_count)}</td>
             </tr>`).join('') || `<tr><td colspan="6" class="empty">Nothing to show yet.</td></tr>`}
@@ -325,11 +330,30 @@ async function loadEnergy() {
 let fleetRows = [], fleetSort = { key: 'site', dir: 1 };
 
 async function loadFleet() {
-    busy('fleetTable', 10);
+    busy('fleetKpis'); busy('fleetTable', 10);
     try {
         fleetRows = await api('/api/fleet');
+        renderFleetKpis();
         renderFleet();
-    } catch (err) { failed('fleetTable', err, 10); }
+    } catch (err) { failed('fleetKpis', err); failed('fleetTable', err, 10); }
+}
+
+function renderFleetKpis() {
+    const kwp = fleetRows.reduce((a, r) => a + num(r.installed_kwp), 0);
+    const kwh = fleetRows.reduce((a, r) => a + num(r.generation_kwh), 0);
+    const vcu = fleetRows.reduce((a, r) => a + num(r.vcu_issued), 0);
+    const regions = new Set(fleetRows.map((r) => r.region).filter(Boolean)).size;
+    el('fleetKpis').innerHTML = [
+        ['Sites', fmt(fleetRows.length), '', `${fmt(regions)} province(s)`],
+        ['Installed capacity', fmt(kwp, 0), 'kWp', 'total across the fleet'],
+        ['Energy generated', fmt(kwh), 'kWh', 'everything these sites produced'],
+        ['Credits earned', fmt(vcu, 2), 'VCUs', 'one tonne avoided is one credit'],
+    ].map(([label, value, unit, foot], i) => `
+        <div class="kpi-card" style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
+            <div class="label">${label}</div>
+            <div class="value">${value}<span class="unit">${unit}</span></div>
+            <div class="foot">${foot}</div>
+        </div>`).join('');
 }
 
 function renderFleet() {
@@ -362,14 +386,14 @@ function renderFleet() {
         <tbody>${rows.map((r) => `
             <tr class="clickable" data-site="${esc(r.site_code)}">
                 <td><strong>${esc(r.site)}</strong></td>
-                <td>${esc(r.region || '—')}</td>
+                <td>${esc(r.region || '')}</td>
                 <td class="num">${fmt(r.installed_kwp, 1)}</td>
-                <td>${esc(r.grid_connection_date || '—')}</td>
+                <td>${esc(r.grid_connection_date || '')}</td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
-                <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
+                <td class="num">${r.specific_yield_per_day === null ? '' : fmt(r.specific_yield_per_day, 2)}</td>
                 <td class="num">${fmt(r.vcu_issued, 2)}</td>
                 <td class="num">${fmt(r.days_with_data)}</td>
-                <td>${esc(r.plant_status || '—')}</td>
+                <td>${esc(r.plant_status || '')}</td>
             </tr>`).join('') || `<tr><td colspan="10" class="empty">No sites yet.</td></tr>`}
         </tbody>`;
 
@@ -419,7 +443,7 @@ async function openMonths() {
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
                 <td>${monthName(m.month)}</td><td class="num">${fmt(m.generation_kwh)}</td>
-                <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${m.net_reduction_tco2e === null ? '' : fmt(m.net_reduction_tco2e, 2)}</td>
                 <td class="num">${fmt(m.vcu_issued, 2)}</td></tr>`).join('')}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-month]').forEach((tr) => {
@@ -467,8 +491,8 @@ async function openDays(site, month) {
             <tr class="clickable" data-day="${d.reading_date}">
                 <td>${dayName(d.reading_date)}</td>
                 <td class="num">${fmt(d.generation_kwh, 1)}</td>
-                <td class="num">${d.specific_yield === null ? '—' : fmt(d.specific_yield, 2)}</td>
-                <td class="num">${d.device_count ? fmt(d.device_count) : '—'}</td>
+                <td class="num">${d.specific_yield === null ? '' : fmt(d.specific_yield, 2)}</td>
+                <td class="num">${d.device_count ? fmt(d.device_count) : ''}</td>
                 <td class="src-note">${esc(d.filename || '')}</td>
             </tr>`).join('') || `<tr><td colspan="5" class="empty">No readings for this site.</td></tr>`}
         </tbody></table></div>`;
@@ -486,7 +510,7 @@ async function openReadings(site, day, month) {
     const d = await api(`/api/drill/sites/${encodeURIComponent(site)}/days/${day}/readings`);
     if (!d.readings.length) {
         el('drawerBody').innerHTML = `<div class="empty">No rows in any uploaded file for ${esc(site)} on ${esc(dayName(day))}.
-            That is what makes this day a gap — nothing was interpolated to fill it.</div>`;
+            That is what makes this day a gap, nothing was interpolated to fill it.</div>`;
         return;
     }
     el('drawerBody').innerHTML = `
@@ -498,7 +522,7 @@ async function openReadings(site, day, month) {
         <tbody>${d.readings.map((r) => `
             <tr>
                 <td>${esc(r.metric_label || r.metric)}</td>
-                <td class="mono">${esc(r.device_sn || '—')}</td>
+                <td class="mono">${esc(r.device_sn || '')}</td>
                 <td class="num">${fmt(r.value, 2)} ${esc(r.unit || '')}</td>
                 <td class="mono">${esc(r.source_col || '')}${esc(String(r.source_row))}</td>
                 <td>#${r.file_id} ${esc(r.filename)}<div class="hash">${esc(r.sha256)}</div></td>
@@ -578,7 +602,7 @@ async function drawMap() {
                 <td><strong>${esc(r.region)}</strong></td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
                 <td class="num">${fmt(r.site_count)}</td>
-                <td class="num">${r.installed_kwp === null ? '—' : fmt(r.installed_kwp, 0)}</td>
+                <td class="num">${r.installed_kwp === null ? '' : fmt(r.installed_kwp, 0)}</td>
                 <td class="num">${fmt(r.vcu_issued, 2)}</td>
             </tr>`).join('') || `<tr><td colspan="5" class="empty">No regions yet.</td></tr>`}
         </tbody>`;
@@ -622,7 +646,7 @@ async function loadLedger() {
         <tbody>${(d.rows || []).map((r) => `
             <tr>${cols.map(([k, label, dp]) => {
                 const v = r[k];
-                if (v === null || v === undefined) return '<td class="num">—</td>';
+                if (v === null || v === undefined) return '<td class="num"></td>';
                 if (dp === 0) return `<td>${k === 'month' ? esc(monthName(v)) : esc(v)}</td>`;
                 return `<td class="num">${fmt(v, dp)}</td>`;
             }).join('')}</tr>`).join('')
@@ -680,8 +704,8 @@ function renderResults(results) {
                 <span style="color:var(--muted);font-weight:400;font-size:12.5px">${esc(r.message || '')}</span></div>
             ${r.status === 'loaded' ? `<div class="facts">
                 ${fact('Layout', `${esc(r.layout)} · ${esc(r.grain)} grain`)}
-                ${fact('Sheet', `${esc(r.sheet_name || '—')} (header row ${esc(String(r.header_row))})`)}
-                ${fact('Period', `${esc(r.period_start || '—')} → ${esc(r.period_end || '—')}`)}
+                ${fact('Sheet', `${esc(r.sheet_name || '')} (header row ${esc(String(r.header_row))})`)}
+                ${fact('Period', `${esc(r.period_start || '')} → ${esc(r.period_end || '')}`)}
                 ${fact('Rows read', fmt(r.row_count))}
                 ${fact('Values kept', fmt(r.values_kept))}
                 ${fact('Values blank', fmt(r.values_blank))}
@@ -711,7 +735,7 @@ async function loadFiles() {
             <tr><td>${f.file_id}</td>
                 <td>${esc(f.filename)}<div class="hash">${esc(f.sha256)}</div></td>
                 <td>${esc(f.grain)}</td>
-                <td>${esc(f.period_start || '—')} → ${esc(f.period_end || '—')}</td>
+                <td>${esc(f.period_start || '')} → ${esc(f.period_end || '')}</td>
                 <td class="num">${fmt(f.row_count)}</td>
                 <td class="num">${fmt(f.values_kept)}</td>
                 <td class="num">${fmt(f.values_blank)}</td>
