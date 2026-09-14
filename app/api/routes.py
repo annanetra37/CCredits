@@ -271,9 +271,12 @@ def calculation(month: dt.date | None = None) -> dict:
         SELECT COALESCE(SUM(net_reduction_tco2e),0) AS net_reduction_tco2e,
                MAX(emission_factor) AS emission_factor,
                MAX(factor_source)   AS factor_source,
+               MAX(factor_source_url) AS factor_source_url,
                MAX(factor_vintage)  AS factor_vintage,
                MAX(factor_valid_from) AS factor_valid_from,
-               MAX(factor_type)     AS factor_type
+               MAX(factor_type)     AS factor_type,
+               bool_and(COALESCE(factor_verified, false)) AS factor_verified,
+               count(*) FILTER (WHERE emission_factor IS NULL) AS months_without_factor
         FROM gold.carbon WHERE (%s::date IS NULL OR month = %s)
         """,
         (month, month),
@@ -318,9 +321,22 @@ def calculation(month: dt.date | None = None) -> dict:
             {
                 "label": "Carbon reduction",
                 "formula": "eligible_MWh × emission_factor − project_emissions − leakage",
-                "substituted": f"{eligible_mwh:,.3f} × {float(carbon.get('emission_factor') or 0):g} − 0 − 0",
-                "result": f"{float(carbon.get('net_reduction_tco2e') or 0):,.3f} tCO₂e",
+                "substituted": (
+                    f"{eligible_mwh:,.3f} × {float(carbon.get('emission_factor') or 0):g} − 0 − 0"
+                    if carbon.get("emission_factor") is not None
+                    else f"{eligible_mwh:,.3f} × (no emission factor set)"
+                ),
+                "result": (
+                    f"{float(carbon.get('net_reduction_tco2e') or 0):,.3f} tCO₂e"
+                    if carbon.get("emission_factor") is not None
+                    else "not calculable"
+                ),
                 "source": "gold.carbon",
+                "warning": (
+                    None if carbon.get("factor_verified")
+                    else "The emission factor is unverified — nobody has checked it against a "
+                         "source document. This figure is not defensible until they have."
+                ),
             },
             {
                 "label": "Indicative revenue",

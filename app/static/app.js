@@ -154,13 +154,19 @@ async function loadOverview() {
             <div class="formula">${esc(s.formula)}</div>
             <div class="subst">${esc(s.substituted)}</div>
             <div class="result">${esc(s.result)}</div>
+            ${s.warning ? `<div class="unverified">⚠ ${esc(s.warning)}</div>` : ''}
             <div class="src">${esc(s.source)}</div>
-        </div>`).join('') + (calc.factor_source ? `
+        </div>`).join('') + (calc.emission_factor !== null && calc.emission_factor !== undefined ? `
         <div class="step" style="border-left-color:transparent">
             <div class="formula">Emission factor ${esc(String(calc.emission_factor))} tCO₂e/MWh
                 — vintage ${esc(calc.factor_vintage)}, ${esc(calc.factor_type)}, valid from ${esc(calc.factor_valid_from)}</div>
-            <div class="src">${esc(calc.factor_source)}</div>
-        </div>` : '');
+            <div class="src">${esc(calc.factor_source)}
+                ${calc.factor_verified ? '' : ' <span class="pill missing">unverified</span>'}</div>
+        </div>` : `
+        <div class="step" style="border-left-color:transparent">
+            <div class="unverified">⚠ No emission factor is set, so carbon and carbon revenue
+                read zero. Nothing is standing in for it.</div>
+        </div>`);
 
     el('monthsTable').innerHTML = `
         <thead><tr>
@@ -199,13 +205,19 @@ function renderContext() {
 
     const factors = CONTEXT.emission_factors.map((f) => `
         <tr><td>${esc(f.factor_type)}</td><td class="num">${esc(String(f.value_tco2e_per_mwh))}</td>
-            <td>${esc(f.vintage)}</td><td>${esc(f.valid_from)} → ${esc(f.valid_to || 'open')}</td></tr>`).join('');
+            <td>${esc(f.vintage)}</td><td>${esc(f.valid_from)} → ${esc(f.valid_to || 'open')}</td>
+            <td>${f.verified
+                ? `<span class="pill ok">verified</span>`
+                : `<span class="pill missing">unverified</span>`}</td></tr>
+        <tr><td colspan="5" class="src-note">${esc(f.source)}${f.source_url ? ` — ${esc(f.source_url)}` : ''}</td></tr>`).join('')
+        || `<tr><td colspan="5" class="empty">No emission factor set. Carbon figures read zero
+            rather than using a placeholder.</td></tr>`;
     const prices = CONTEXT.prices.map((p) => `
         <tr><td>${esc(p.instrument.toUpperCase())}</td><td class="num">${esc(String(p.value))} ${esc(p.currency)}</td>
             <td>${esc(p.as_of)}</td><td>${esc(p.source || '')}</td></tr>`).join('');
     el('reference').innerHTML = `
         <h3>Emission factors (tCO₂e/MWh)</h3>
-        <div class="scroll"><table><thead><tr><th>Type</th><th class="num">Value</th><th>Vintage</th><th>Valid</th></tr></thead>
+        <div class="scroll"><table><thead><tr><th>Type</th><th class="num">Value</th><th>Vintage</th><th>Valid</th><th>Checked</th></tr></thead>
         <tbody>${factors}</tbody></table></div>
         <h3 style="margin-top:16px">Prices</h3>
         <div class="scroll"><table><thead><tr><th>Instrument</th><th class="num">Price</th><th>As of</th><th>Source</th></tr></thead>

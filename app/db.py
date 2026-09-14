@@ -92,20 +92,22 @@ def seed_reference_data() -> None:
     operator who edits a factor in the database keeps their edit."""
     with connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM gold.emission_factor")
-        if cur.fetchone()["n"] == 0:
+        if cur.fetchone()["n"] == 0 and settings.default_emission_factor > 0:
+            # Seeded as unverified. A person marks it verified once they have
+            # checked it against the source document, and only then does the
+            # portal stop labelling every carbon number as unverified.
             cur.execute(
                 """
                 INSERT INTO gold.emission_factor
-                    (value_tco2e_per_mwh, factor_type, source, vintage, valid_from, valid_to)
-                VALUES
-                    (%s, 'combined_margin', %s, '2021', DATE '2020-01-01', DATE '2023-12-31'),
-                    (%s, 'combined_margin', %s, '2024', DATE '2024-01-01', NULL)
+                    (value_tco2e_per_mwh, factor_type, source, source_url, vintage,
+                     valid_from, valid_to, verified)
+                VALUES (%s, 'combined_margin', %s, %s, %s, DATE '2020-01-01', NULL, false)
                 """,
                 (
                     settings.default_emission_factor,
                     settings.default_emission_factor_source,
-                    settings.default_emission_factor,
-                    settings.default_emission_factor_source,
+                    settings.default_emission_factor_url or None,
+                    settings.default_emission_factor_vintage,
                 ),
             )
         cur.execute("SELECT COUNT(*) AS n FROM gold.price")

@@ -54,10 +54,17 @@ class Settings(BaseSettings):
     zero_day_policy: str = Field(default="suspect", alias="ZERO_DAY_POLICY")  # suspect | ok
     missing_day_policy: str = Field(default="exclude", alias="MISSING_DAY_POLICY")  # exclude | zero
     trust_grid_connection_date: bool = Field(default=True, alias="TRUST_GRID_CONNECTION_DATE")
-    default_emission_factor: float = Field(default=0.3550, alias="DEFAULT_EMISSION_FACTOR")
+    # There is no agreed Armenian grid factor in this project yet. The seed
+    # below is a placeholder that identifies itself as one; it must not be
+    # dressed in a citation nobody has checked.
+    default_emission_factor: float = Field(default=0.0, alias="DEFAULT_EMISSION_FACTOR")
     default_emission_factor_source: str = Field(
-        default="IFI Default Grid Factor 2021 v3.2 — Armenia combined margin",
+        default="UNVERIFIED — no source document supplied",
         alias="DEFAULT_EMISSION_FACTOR_SOURCE",
+    )
+    default_emission_factor_url: str = Field(default="", alias="DEFAULT_EMISSION_FACTOR_URL")
+    default_emission_factor_vintage: str = Field(
+        default="unset", alias="DEFAULT_EMISSION_FACTOR_VINTAGE"
     )
     default_irec_price: float = Field(default=1.50, alias="DEFAULT_IREC_PRICE_PER_MWH")
     default_vcu_price: float = Field(default=8.00, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
@@ -109,8 +116,17 @@ class Settings(BaseSettings):
             {
                 "key": "emission_factor",
                 "label": "Emission factor",
-                "value": f"{self.default_emission_factor:g} tCO2e/MWh",
-                "note": self.default_emission_factor_source,
+                "value": (
+                    f"{self.default_emission_factor:g} tCO2e/MWh"
+                    if self.default_emission_factor > 0
+                    else "not set"
+                ),
+                "note": (
+                    self.default_emission_factor_source
+                    if self.default_emission_factor > 0
+                    else "Still outstanding. Carbon and carbon revenue read zero until a "
+                         "sourced factor is entered — no placeholder stands in for it."
+                ),
                 "env": "DEFAULT_EMISSION_FACTOR",
             },
         ]
