@@ -481,6 +481,30 @@ def quality() -> dict:
     }
 
 
+# --- Reconciliation --------------------------------------------------------
+
+@router.get("/reconcile")
+def reconcile(verbose: bool = False) -> dict:
+    """Recompute every figure independently and report the comparison.
+
+    The checks live in cli/reconcile.py and never read the Silver or Gold
+    views — they rebuild the same numbers in Python from the Bronze cells and
+    from a fresh parse of the stored original files. Agreement between two
+    implementations is the point; this endpoint just surfaces it.
+    """
+    from dataclasses import asdict
+    import cli.reconcile as rec
+
+    results = rec.run(verbose)
+    return {
+        "ok": not any(r.status == "fail" for r in results),
+        "passed": sum(1 for r in results if r.status == "pass"),
+        "failed": sum(1 for r in results if r.status == "fail"),
+        "skipped": sum(1 for r in results if r.status == "skip"),
+        "checks": [asdict(r) for r in results],
+    }
+
+
 # --- 5.1 Upload ------------------------------------------------------------
 
 @router.get("/files")
