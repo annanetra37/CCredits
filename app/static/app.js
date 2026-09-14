@@ -117,12 +117,14 @@ async function loadOverview() {
     ]);
 
     const cur = flow.currency || 'USD';
+    // Capacity has a card of its own now, so the line above no longer repeats it.
     el('contextLine').textContent =
-        `${fmt(summary.site_count)} sites · ${fmt(summary.installed_kwp, 0)} kWp installed · `
-        + `${fmt(summary.days_with_data)} days of readings · `
+        `${fmt(summary.days_with_data)} days of readings · `
         + `${summary.window_start || '—'} to ${summary.window_end || '—'}`;
 
     el('kpis').innerHTML = [
+        ['Installed capacity', fmt(summary.installed_kwp, 0), 'kWp',
+         `across ${fmt(summary.site_count)} sites`],
         ['Energy generated', fmt(summary.generation_kwh), 'kWh',
          'everything the sites produced'],
         ['CO₂ avoided', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
