@@ -67,6 +67,18 @@ JOIN silver.generation_daily gd
  AND gd.reading_date = fsd.reading_date
 WHERE gd.file_id <> fsd.file_id;
 
+-- How many files speak to each site-day, and how far apart they are. Computed
+-- once as its own view: as a correlated subquery inside data_quality it ran
+-- per site-day, re-aggregating every reading in Bronze each time.
+CREATE OR REPLACE VIEW silver.site_day_sources AS
+SELECT plant_name,
+       reading_date,
+       COUNT(*)                                            AS file_count,
+       MAX(generation_kwh)                                 AS max_kwh,
+       MAX(generation_kwh) - MIN(generation_kwh)           AS spread_kwh
+FROM silver.file_site_day
+GROUP BY plant_name, reading_date;
+
 -- 3.2 A row per site per day in the loaded window, whether or not data exists.
 CREATE OR REPLACE VIEW silver.site_day_expected AS
 SELECT s.plant_name,
@@ -120,13 +132,8 @@ CROSS JOIN silver.rules r
 JOIN bronze.site s              ON s.plant_name = e.plant_name
 LEFT JOIN silver.generation_daily g
        ON g.plant_name = e.plant_name AND g.reading_date = e.reading_date
-LEFT JOIN LATERAL (
-       SELECT COUNT(*)                                        AS file_count,
-              MAX(f.generation_kwh)                           AS max_kwh,
-              MAX(f.generation_kwh) - MIN(f.generation_kwh)   AS spread_kwh
-       FROM silver.file_site_day f
-       WHERE f.plant_name = e.plant_name AND f.reading_date = e.reading_date
-) dup ON true;
+LEFT JOIN silver.site_day_sources dup
+       ON dup.plant_name = e.plant_name AND dup.reading_date = e.reading_date;
 
 -- 3.4 Collapse the booleans into one flag. Missing stays missing: a gap is
 -- never interpolated and never quietly becomes a zero.
