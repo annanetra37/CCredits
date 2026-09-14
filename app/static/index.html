@@ -129,13 +129,16 @@
         </div>
         <div class="scroll"><table id="ledgerTable"></table></div>
     </div>
+
     <div class="panel">
-        <h2>Check the numbers</h2>
-        <p class="sub">Recomputes every figure a second time in Python, from the spreadsheet
-            cells, never from the database views, and compares. Two independent results
-            agreeing is the evidence the table above is right.</p>
-        <button class="ghost" id="runRecon">Run the check</button>
-        <div id="reconResult"></div>
+        <h2>Who has opened this</h2>
+        <p class="sub">Counted by this portal itself, not by any outside service. To tell one
+            person from another, add <span class="mono">?from=their-name</span> to the end of the
+            link you send them, and their name appears below once they open it.</p>
+        <div class="grid kpi" id="visitorKpis"></div>
+        <div class="scroll"><table id="linksTable"></table></div>
+        <h3 style="margin-top:18px">Recent visits</h3>
+        <div class="scroll"><table id="visitorsTable"></table></div>
     </div>
 </section>
 

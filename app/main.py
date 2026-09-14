@@ -8,10 +8,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import visits
 from app.api.routes import router
 from app.config import settings
 from app.db import migrate
@@ -47,8 +48,10 @@ def startup() -> None:
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index(request: Request) -> FileResponse:
+    response = FileResponse(STATIC_DIR / "index.html")
+    visits.record(request, response)
+    return response
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
