@@ -256,13 +256,19 @@ def test_only_the_active_factor_drives_the_number(factor_for_2025):
         conn.commit()
 
 
-def test_a_lapsed_baseline_yields_no_claim_by_default():
-    """The seeded Armenian baseline lapsed in 2021; the data here is 2025."""
-    load_bytes(wide([1000.0], kwp=500.0), "lapsed.xlsx")
-    row = query_one("SELECT emission_factor, net_reduction_tco2e FROM gold.carbon")
-    assert row["emission_factor"] is None
-    assert row["net_reduction_tco2e"] is None
-    assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
+def test_the_published_validity_is_recorded_even_when_the_factor_is_applied_past_it():
+    """ASB0038-2018 states validity to 2021-02-18 but is the most recent approved
+    baseline for Armenia, so it is applied to later months — and flagged."""
+    load_bytes(wide([1000.0], kwp=500.0), "beyond.xlsx")
+    row = query_one(
+        "SELECT emission_factor, net_reduction_tco2e, factor_published_valid_to, "
+        "factor_beyond_validity FROM gold.carbon"
+    )
+    assert float(row["emission_factor"]) == pytest.approx(0.4329)
+    assert row["net_reduction_tco2e"] is not None
+    # The difference between applied and published is never hidden.
+    assert row["factor_published_valid_to"] == dt.date(2021, 2, 18)
+    assert row["factor_beyond_validity"] is True
 
 
 def test_inactive_site_energy_is_excluded_with_its_own_reason():
@@ -377,15 +383,86 @@ def test_reconciliation_catches_a_deleted_bronze_row():
     assert _recon("reparse_matches_bronze").status == "fail"
 
 
-def test_reconciliation_names_the_missing_factor_as_the_reason_for_zero():
-    """The lapsed-baseline case must be reported, not silently skipped."""
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE gold.emission_factor SET active = (value_tco2e_per_mwh = 0.4329)")
-        conn.commit()
-    assert query_one("SELECT COUNT(*) n FROM gold.emission_factor WHERE active")["n"] == 1
+def test_reconciliation_names_a_missing_factor_as_the_reason_for_zero(no_emission_factor):
+    """With no factor on file the credits are zero, and the report says why."""
     load_bytes(wide([1000.0, 1200.0], kwp=500.0), "recon-nofactor.xlsx")
     check = _recon("factor_coverage")
     assert check.status == "fail"
     assert "no applicable emission factor" in check.detail
-    assert "2018-02-19" in check.detail and "2021-02-18" in check.detail
     assert int(query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")["v"]) == 0
+
+
+def test_sites_are_pseudonymised_by_default():
+    """Opening the portal must not disclose which client a site belongs to."""
+    load_bytes(wide([500.0], kwp=500.0, name="Very Identifiable Client Ltd"), "named.xlsx")
+    row = query_one("SELECT site_code, label, region FROM silver.site_identity")
+    assert row["site_code"].startswith("SITE-")
+    assert row["label"] == row["site_code"]
+    assert "Identifiable" not in row["label"]
+    # The code is stable, so the same site is the same code on every screen.
+    again = query_one("SELECT site_code FROM silver.site_identity")
+    assert again["site_code"] == row["site_code"]
+
+
+def test_region_is_split_out_of_the_address():
+    load_bytes(wide([500.0], kwp=500.0), "region.xlsx")
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE bronze.site SET address = 'Ararat, Armenia'")
+        conn.commit()
+    row = query_one("SELECT region, country FROM silver.site_identity")
+    assert row["region"] == "Ararat"
+    assert row["country"] == "Armenia"
+
+
+# --- Databases seeded by an earlier version must be corrected in place ------
+
+def test_migration_repairs_a_database_seeded_by_an_older_version():
+    """The seed only fills an empty table, so a live deployment keeps its old
+    rows. These corrections have to reach it through the migration instead."""
+    from app.db import migrate
+
+    with connection() as conn, conn.cursor() as cur:
+        # Put the database back into the shape the previous version left it in.
+        cur.execute(
+            """
+            UPDATE gold.emission_factor
+               SET valid_to = DATE '2021-02-18',
+                   published_valid_to = NULL,
+                   project_types = NULL,
+                   source_url = 'https://cdm.unfccc.int/methodologies/standard_base/index.html',
+                   active = false
+            """
+        )
+        cur.execute("ALTER TABLE gold.price DROP CONSTRAINT IF EXISTS price_instrument_check")
+        cur.execute(
+            "INSERT INTO gold.price (instrument, value, currency, source, as_of) "
+            "VALUES ('irec', 1.50, 'USD', 'Indicative pilot pricing', DATE '2024-01-01') "
+            "ON CONFLICT DO NOTHING"
+        )
+        cur.execute(
+            "UPDATE gold.price SET value = 8.00, source = 'Indicative pilot pricing' "
+            "WHERE instrument = 'vcu'"
+        )
+        conn.commit()
+
+    migrate()
+
+    # I-RECs are gone, and only the VCU price remains.
+    assert query_one("SELECT COUNT(*) n FROM gold.price WHERE instrument <> 'vcu'")["n"] == 0
+    price = query_one("SELECT value, source FROM gold.price WHERE instrument = 'vcu'")
+    assert float(price["value"]) == 3.00
+    assert "conservative end" in price["source"]
+
+    # The factor applies open-endedly, and what the document says is retained.
+    factor = query_one(
+        "SELECT value_tco2e_per_mwh v, valid_to, published_valid_to, project_types, source_url "
+        "FROM gold.emission_factor WHERE active"
+    )
+    assert float(factor["v"]) == pytest.approx(0.4329)
+    assert factor["valid_to"] is None
+    assert factor["published_valid_to"] == dt.date(2021, 2, 18)
+    assert factor["project_types"].startswith("Wind and solar")
+    assert "environment.gov.am" in factor["source_url"]
+
+    # Exactly one row drives a number.
+    assert query_one("SELECT COUNT(*) n FROM gold.emission_factor WHERE active")["n"] == 1

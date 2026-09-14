@@ -12,6 +12,25 @@ SELECT
     (SELECT txt FROM silver.parameter WHERE key = 'missing_day_policy')          AS missing_day_policy,
     (SELECT txt FROM silver.parameter WHERE key = 'trust_grid_connection_date')  AS trust_grid_connection_date;
 
+-- How a site is identified on screen. One definition, read by every query, so
+-- the pseudonym is the same everywhere. Real names are disclosed only when the
+-- show_real_site_names parameter says so.
+CREATE OR REPLACE VIEW silver.site_identity AS
+SELECT s.plant_name,
+       s.site_code,
+       CASE WHEN (SELECT txt FROM silver.parameter WHERE key = 'show_real_site_names') = 'true'
+            THEN s.plant_name
+            ELSE s.site_code
+       END                              AS label,
+       s.region,
+       s.country,
+       s.address,
+       s.plant_type,
+       s.installed_kwp,
+       s.grid_connection_date,
+       s.plant_status
+FROM bronze.site s;
+
 -- The window of dates the uploaded files actually cover.
 CREATE OR REPLACE VIEW silver.loaded_window AS
 SELECT MIN(period_start) AS window_start,

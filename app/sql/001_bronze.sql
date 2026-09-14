@@ -55,6 +55,20 @@ CREATE TABLE IF NOT EXISTS bronze.site (
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
+-- A stable pseudonym for every site. Derived from the name, so it is the same
+-- code on every screen and across reloads, but it does not disclose the client.
+-- The real name stays in the database, where the joins need it; the portal
+-- shows the code unless someone turns real names on.
+ALTER TABLE bronze.site ADD COLUMN IF NOT EXISTS site_code text
+    GENERATED ALWAYS AS ('SITE-' || upper(substr(md5(plant_name), 1, 6))) STORED;
+
+-- Region and locality, split out of the address the export supplies
+-- ("Ararat, Armenia" -> region "Ararat", country "Armenia").
+ALTER TABLE bronze.site ADD COLUMN IF NOT EXISTS region text
+    GENERATED ALWAYS AS (NULLIF(btrim(split_part(address, ',', 1)), '')) STORED;
+ALTER TABLE bronze.site ADD COLUMN IF NOT EXISTS country text
+    GENERATED ALWAYS AS (NULLIF(btrim(split_part(address, ',', 2)), '')) STORED;
+
 -- 2.4 Overlaps are recorded, never resolved by deletion. Silver decides which
 -- reading wins; this table exists so the overlap itself stays visible.
 CREATE TABLE IF NOT EXISTS bronze.file_overlap (

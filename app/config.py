@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     # below is a placeholder that identifies itself as one; it must not be
     # dressed in a citation nobody has checked.
     default_emission_factor: float = Field(default=0.0, alias="DEFAULT_EMISSION_FACTOR")
+    emission_factor_verified_by: str = Field(default="", alias="EMISSION_FACTOR_VERIFIED_BY")
     default_emission_factor_source: str = Field(
         default="UNVERIFIED — no source document supplied",
         alias="DEFAULT_EMISSION_FACTOR_SOURCE",
@@ -79,21 +80,20 @@ class Settings(BaseSettings):
         default="unset", alias="DEFAULT_EMISSION_FACTOR_VINTAGE"
     )
     emission_factor_valid_from: str = Field(default="", alias="EMISSION_FACTOR_VALID_FROM")
-    emission_factor_valid_to: str = Field(default="", alias="EMISSION_FACTOR_VALID_TO")
-    # A standardized baseline has a published validity window. When the loaded
-    # period falls outside it, the honest default is to refuse the number.
-    # Setting this applies the lapsed factor anyway and labels every figure
-    # derived from it as outside its published validity.
-    allow_expired_emission_factor: bool = Field(
-        default=False, alias="ALLOW_EXPIRED_EMISSION_FACTOR"
-    )
-    default_vcu_price: float = Field(default=0.0, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
+    # Empty means the factor is applied open-endedly. Its own published validity
+    # is recorded separately, so the portal can show where the two differ.
+    default_vcu_price: float = Field(default=3.0, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
     price_currency: str = Field(default="USD", alias="PRICE_CURRENCY")
-    vcu_price_source: str = Field(default="", alias="VCU_PRICE_SOURCE")
+    vcu_price_source: str = Field(
+        default="Indicative pilot pricing — conservative end of the VCU range",
+        alias="VCU_PRICE_SOURCE",
+    )
 
     # --- Presentation -----------------------------------------------------
     banner_text: str = Field(default="Pilot data. Not verified.", alias="BANNER_TEXT")
     fleet_name: str = Field(default="SANNOVA", alias="FLEET_NAME")
+    # Sites are shown by pseudonym by default; client names are not disclosed.
+    show_real_site_names: bool = Field(default=False, alias="SHOW_REAL_SITE_NAMES")
 
     @property
     def dsn(self) -> str:

@@ -16,9 +16,10 @@
     <div class="brand">CCredits<span id="fleetName"></span></div>
     <nav>
         <button data-screen="overview" class="active">Overview</button>
-        <button data-screen="fleet">Fleet</button>
+        <button data-screen="energy">Energy</button>
+        <button data-screen="fleet">Sites</button>
         <button data-screen="quality">Data quality</button>
-        <button data-screen="upload">Upload</button>
+        <button data-screen="upload">Connect solar data</button>
     </nav>
 </header>
 
@@ -43,8 +44,10 @@
             <div id="calc"></div>
         </div>
         <div class="panel">
-            <h2>Reference data</h2>
-            <p class="sub">Versioned and dated, never constants in code.</p>
+            <h2>What turns energy into credits</h2>
+            <p class="sub">Two numbers do all the work: how much CO₂ a megawatt-hour of
+                Armenian grid electricity would have emitted, and what a tonne of CO₂ sells for.
+                Both are shown here with where they came from.</p>
             <div id="reference"></div>
         </div>
     </div>
@@ -63,12 +66,35 @@
     </div>
 </section>
 
+<!-- ================= ENERGY ================= -->
+<section class="screen" id="screen-energy">
+    <div class="grid kpi" id="energyKpis"></div>
+    <div class="panel">
+        <h2>Energy generated</h2>
+        <p class="sub">The same energy, grouped the way you want to read it.</p>
+        <div class="toolbar">
+            <span class="toolbar-label">Group by</span>
+            <div class="segmented" id="energyGroup">
+                <button data-group="month" class="active">Month</button>
+                <button data-group="day">Day</button>
+                <button data-group="site">Site</button>
+                <button data-group="region">Region</button>
+            </div>
+            <span class="toolbar-label" style="margin-left:auto">Site</span>
+            <select id="energySite"><option value="">All sites</option></select>
+        </div>
+        <div class="scroll"><table id="energyTable"></table></div>
+    </div>
+</section>
+
 <!-- ================= FLEET (5.4) ================= -->
 <section class="screen" id="screen-fleet">
     <div class="panel">
-        <h2>Fleet</h2>
-        <p class="sub">Sortable. Sorting by specific yield is the fastest way to find a broken site.
-            Click a row to drill into its days.</p>
+        <h2>Sites</h2>
+        <p class="sub">One row per site, with its region and capacity. Every column sorts —
+            sorting by specific yield is the fastest way to find a site that is underperforming.
+            Click a row to see its daily energy.</p>
+        <p class="sub" id="privacyNote"></p>
         <div class="scroll"><table id="fleetTable"></table></div>
     </div>
 </section>
@@ -110,12 +136,13 @@
 <!-- ================= UPLOAD (5.1) ================= -->
 <section class="screen" id="screen-upload">
     <div class="panel">
-        <h2>Upload Sungrow exports</h2>
-        <p class="sub">xlsx, xls or csv. The original file is stored unmodified alongside its
-            SHA-256 — that stored file is what the lineage view ultimately points at.</p>
+        <h2>Connect solar data</h2>
+        <p class="sub">Drop the Sungrow exports in. The portal reads them, works out the energy
+            each site generated, and turns that into credits. The original file is kept exactly
+            as you sent it, alongside its fingerprint, so every number stays traceable.</p>
         <div id="drop">
             <div class="big">Drop files here, or click to choose</div>
-            <div class="small">Plant list, plant daily yield, device daily report — any of them, in any order</div>
+            <div class="small">Plant daily yield, device daily report or plant list — any of them, in any order</div>
         </div>
         <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.xlsm,.tsv" hidden>
         <div id="uploadResults"></div>
