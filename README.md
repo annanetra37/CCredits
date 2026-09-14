@@ -13,7 +13,7 @@ xlsx  →  bronze  →  silver  →  gold  →  screen
 
 - **Bronze** — what the files said. Immutable, long format, one row per cell.
 - **Silver** — the rules, as readable SQL views. Quality flags, eligibility.
-- **Gold** — I-RECs with carry-forward, carbon, revenue, and lineage.
+- **Gold** — emission reductions, VCUs with carry-forward, revenue, and lineage.
 
 Silver and Gold store nothing. A new upload or a changed emission factor
 recomputes everything on the next page load.
@@ -40,7 +40,9 @@ Open <http://localhost:8000>.
 
 ## Deploy it
 
-One web service, one Postgres. See [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md).
+One container, one Postgres, one storage account, on **Azure** —
+see [docs/DEPLOY_AZURE.md](docs/DEPLOY_AZURE.md).
+A Railway path is kept in [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.md).
 
 ## Documentation
 
@@ -48,7 +50,8 @@ One web service, one Postgres. See [docs/DEPLOY_RAILWAY.md](docs/DEPLOY_RAILWAY.
 |---|---|
 | [Portal guide](docs/PORTAL_GUIDE.md) | How to use the four screens, and a demo path that works |
 | [Environment variables](docs/ENVIRONMENT.md) | Every setting, what it does, and which ones change the headline number |
-| [Railway deployment](docs/DEPLOY_RAILWAY.md) | Getting it online |
+| [Azure deployment](docs/DEPLOY_AZURE.md) | Container Apps, Postgres Flexible Server, Blob Storage |
+| [Railway deployment](docs/DEPLOY_RAILWAY.md) | The alternative host |
 
 ## Loading from the terminal
 
@@ -93,7 +96,7 @@ tests/               parser and pipeline tests
 
 ## Scope
 
-Single tenant, no login, Sungrow only, generation-based. No meter or storage
+Single tenant, no login, Sungrow only, generation-based, VCUs only. No meter or storage
 adapters, no evidence packs, no verifier sandbox. All of that stays in the
 target architecture; none of it is needed to demonstrate the idea.
 

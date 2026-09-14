@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     log_level: str = Field(default="info", alias="LOG_LEVEL")
 
     # --- Upload / storage -------------------------------------------------
-    storage_backend: str = Field(default="local", alias="STORAGE_BACKEND")  # local | s3
+    # local | azure | s3. Azure is the deployment target; local is for a laptop.
+    storage_backend: str = Field(default="local", alias="STORAGE_BACKEND")
     storage_dir: str = Field(default="./var/uploads", alias="STORAGE_DIR")
     upload_max_mb: int = Field(default=50, alias="UPLOAD_MAX_MB")
     s3_bucket: str = Field(default="", alias="S3_BUCKET")
@@ -44,6 +45,17 @@ class Settings(BaseSettings):
     s3_region: str = Field(default="eu-west-1", alias="S3_REGION")
     s3_access_key_id: str = Field(default="", alias="S3_ACCESS_KEY_ID")
     s3_secret_access_key: str = Field(default="", alias="S3_SECRET_ACCESS_KEY")
+
+    # --- Azure Blob Storage -----------------------------------------------
+    # Either a connection string, or an account name with a managed identity
+    # (no secret in configuration at all — the preferred arrangement on Azure).
+    azure_storage_connection_string: str = Field(
+        default="", alias="AZURE_STORAGE_CONNECTION_STRING"
+    )
+    azure_storage_account: str = Field(default="", alias="AZURE_STORAGE_ACCOUNT")
+    azure_storage_container: str = Field(
+        default="uploads", alias="AZURE_STORAGE_CONTAINER"
+    )
 
     # --- Access -----------------------------------------------------------
     # Empty means the portal is open. Set it to require a token on any write.
@@ -66,9 +78,18 @@ class Settings(BaseSettings):
     default_emission_factor_vintage: str = Field(
         default="unset", alias="DEFAULT_EMISSION_FACTOR_VINTAGE"
     )
-    default_irec_price: float = Field(default=1.50, alias="DEFAULT_IREC_PRICE_PER_MWH")
-    default_vcu_price: float = Field(default=8.00, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
+    emission_factor_valid_from: str = Field(default="", alias="EMISSION_FACTOR_VALID_FROM")
+    emission_factor_valid_to: str = Field(default="", alias="EMISSION_FACTOR_VALID_TO")
+    # A standardized baseline has a published validity window. When the loaded
+    # period falls outside it, the honest default is to refuse the number.
+    # Setting this applies the lapsed factor anyway and labels every figure
+    # derived from it as outside its published validity.
+    allow_expired_emission_factor: bool = Field(
+        default=False, alias="ALLOW_EXPIRED_EMISSION_FACTOR"
+    )
+    default_vcu_price: float = Field(default=0.0, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
     price_currency: str = Field(default="USD", alias="PRICE_CURRENCY")
+    vcu_price_source: str = Field(default="", alias="VCU_PRICE_SOURCE")
 
     # --- Presentation -----------------------------------------------------
     banner_text: str = Field(default="Pilot data. Not verified.", alias="BANNER_TEXT")

@@ -150,8 +150,8 @@ function drawRiver(d) {
         <rect x="${x3 - 8}" y="${eligibleMid - 28}" width="126" height="56" rx="10"
               fill="${token('--eligible-wash')}" stroke="${cEligible}" stroke-width="1.5"/>
         <text x="${x3 + 55}" y="${eligibleMid - 5}" text-anchor="middle" class="flow-label"
-              style="font-weight:700;font-size:14px">${fmt(d.irec_issued)} I-REC</text>
-        <text x="${x3 + 55}" y="${eligibleMid + 13}" text-anchor="middle" class="flow-sub">${fmt(d.net_reduction_tco2e, 1)} tCO₂e</text>
+              style="font-weight:700;font-size:14px">${fmt(d.vcu_issued)} VCU</text>
+        <text x="${x3 + 55}" y="${eligibleMid + 13}" text-anchor="middle" class="flow-sub">${d.net_reduction_tco2e === null ? 'no factor' : fmt(d.net_reduction_tco2e, 1) + ' tCO₂e'}</text>
     </g>`);
 
     parts.push(`<text x="${x0}" y="${top - 15}" class="flow-cap">All energy read from the files</text>`);
@@ -177,9 +177,9 @@ async function loadOverview() {
     el('kpis').innerHTML = [
         ['Energy generated', fmt(summary.generation_kwh), 'kWh', `${summary.site_count} sites · ${summary.window_start || '—'} to ${summary.window_end || '—'}`],
         ['Eligible energy', fmt(summary.eligible_kwh), 'kWh', `${fmt(summary.excluded_kwh)} kWh excluded with a reason`],
-        ['I-REC issuable', fmt(summary.irec_issued), '', `${fmt(summary.carry_forward_mwh, 3)} MWh carried forward`],
-        ['Carbon reduction', fmt(summary.net_reduction_tco2e, 2), 'tCO₂e', 'Eligible MWh × emission factor'],
-        ['Indicative revenue', `${cur} ${fmt(summary.total_revenue, 0)}`, '', 'At the reference prices below'],
+        ['Emission reduction', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tCO₂e', 'Eligible MWh × emission factor'],
+        ['VCUs issuable', fmt(summary.vcu_issued), '', `${fmt(summary.carry_forward_tco2e, 3)} tCO₂e carried forward`],
+        ['Indicative revenue', `${cur} ${fmt(summary.total_revenue, 0)}`, '', 'VCUs at the reference price below'],
         ['Coverage', fmt(summary.coverage_pct, 1), '%', `${fmt(summary.days_missing)} of ${fmt(summary.site_days)} site-days missing`],
     ].map(([label, value, unit, foot], i) => `
         <div class="kpi-card clickable" data-open="months"
@@ -203,19 +203,20 @@ async function loadOverview() {
         </div>`).join('') + (calc.emission_factor !== null && calc.emission_factor !== undefined ? `
         <div class="step" style="border-left-color:transparent">
             <div class="formula">Emission factor ${esc(String(calc.emission_factor))} tCO₂e/MWh
-                — vintage ${esc(calc.factor_vintage)}, ${esc(calc.factor_type)}, valid from ${esc(calc.factor_valid_from)}</div>
-            <div class="src">${esc(calc.factor_source)}
+                — ${esc((calc.factor_type || '').replace(/_/g, ' '))}, vintage ${esc(calc.factor_vintage)},
+                published validity ${esc(calc.factor_valid_from)} → ${esc(calc.factor_valid_to || 'open')}</div>
+            <div class="src">${esc(calc.factor_project_types || '')}<br>${esc(calc.factor_source)}
                 ${calc.factor_verified ? '' : ' <span class="pill missing">unverified</span>'}</div>
         </div>` : `
         <div class="step" style="border-left-color:transparent">
-            <div class="unverified">⚠ No emission factor is set, so carbon and carbon revenue
-                read zero. Nothing is standing in for it.</div>
+            <div class="unverified">⚠ No emission factor applies to this period, so no
+                emission reduction and no VCUs are claimed. Nothing stands in for it.</div>
         </div>`);
 
     el('monthsTable').innerHTML = `
         <thead><tr>
             <th>Month</th><th class="num">Generated kWh</th><th class="num">Eligible kWh</th>
-            <th class="num">Excluded kWh</th><th class="num">I-REC</th><th class="num">tCO₂e</th>
+            <th class="num">Excluded kWh</th><th class="num">tCO₂e</th><th class="num">VCU</th>
             <th class="num">Revenue</th><th>Quality</th>
         </tr></thead>
         <tbody>${months.map((m) => `
@@ -224,8 +225,8 @@ async function loadOverview() {
                 <td class="num">${fmt(m.generation_kwh)}</td>
                 <td class="num">${fmt(m.eligible_kwh)}</td>
                 <td class="num">${fmt(m.excluded_kwh)}</td>
-                <td class="num">${fmt(m.irec_issued)}</td>
-                <td class="num">${fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${fmt(m.vcu_issued)}</td>
                 <td class="num">${cur} ${fmt(m.total_revenue, 0)}</td>
                 <td>${pill(m.worst_flag)}</td>
             </tr>`).join('') || `<tr><td colspan="8" class="empty">No data loaded yet.</td></tr>`}
@@ -248,20 +249,23 @@ function renderContext() {
         </div>`).join('');
 
     const factors = CONTEXT.emission_factors.map((f) => `
-        <tr><td>${esc(f.factor_type)}</td><td class="num">${esc(String(f.value_tco2e_per_mwh))}</td>
-            <td>${esc(f.vintage)}</td><td>${esc(f.valid_from)} → ${esc(f.valid_to || 'open')}</td>
+        <tr${f.active ? '' : ' style="opacity:.62"'}>
+            <td>${esc(f.factor_type.replace(/_/g, ' '))}
+                ${f.active ? '<span class="pill info">applied</span>' : '<span class="pill grey">reference</span>'}</td>
+            <td class="num">${esc(String(f.value_tco2e_per_mwh))}</td>
+            <td>${esc(f.valid_from)} → ${esc(f.valid_to || 'open')}</td>
             <td>${f.verified
                 ? `<span class="pill ok">verified</span>`
                 : `<span class="pill missing">unverified</span>`}</td></tr>
-        <tr><td colspan="5" class="src-note">${esc(f.source)}${f.source_url ? ` — ${esc(f.source_url)}` : ''}</td></tr>`).join('')
-        || `<tr><td colspan="5" class="empty">No emission factor set. Carbon figures read zero
-            rather than using a placeholder.</td></tr>`;
+        <tr><td colspan="4" class="src-note">${esc(f.project_types || '')}<br>${esc(f.source)}</td></tr>`).join('')
+        || `<tr><td colspan="4" class="empty">No emission factor on file. No reduction is claimed.</td></tr>`;
     const prices = CONTEXT.prices.map((p) => `
         <tr><td>${esc(p.instrument.toUpperCase())}</td><td class="num">${esc(String(p.value))} ${esc(p.currency)}</td>
-            <td>${esc(p.as_of)}</td><td>${esc(p.source || '')}</td></tr>`).join('');
+            <td>${esc(p.as_of)}</td><td>${esc(p.source || '')}</td></tr>`).join('')
+        || `<tr><td colspan="4" class="empty">No VCU price set, so no revenue is shown.</td></tr>`;
     el('reference').innerHTML = `
-        <h3>Emission factors (tCO₂e/MWh)</h3>
-        <div class="scroll"><table><thead><tr><th>Type</th><th class="num">Value</th><th>Vintage</th><th>Valid</th><th>Checked</th></tr></thead>
+        <h3>Emission factors</h3>
+        <div class="scroll"><table><thead><tr><th>Margin</th><th class="num">tCO₂e/MWh</th><th>Published validity</th><th>Checked</th></tr></thead>
         <tbody>${factors}</tbody></table></div>
         <h3 style="margin-top:16px">Prices</h3>
         <div class="scroll"><table><thead><tr><th>Instrument</th><th class="num">Price</th><th>As of</th><th>Source</th></tr></thead>
@@ -290,7 +294,7 @@ function renderFleet() {
         ['eligible_kwh', 'Eligible kWh', 'num'],
         ['specific_yield_per_day', 'Specific yield', 'num2'],
         ['quality_score', 'Quality', 'score'],
-        ['irec_issued', 'I-REC', 'num'],
+        ['vcu_issued', 'VCU', 'num'],
     ];
     const rows = [...fleetRows].sort((a, b) => {
         const x = a[fleetSort.key], y = b[fleetSort.key];
@@ -315,7 +319,7 @@ function renderFleet() {
                 <td class="num">${fmt(r.eligible_kwh)}</td>
                 <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
                 <td class="num">${fmt(r.quality_score, 0)}%</td>
-                <td class="num">${fmt(r.irec_issued)}</td>
+                <td class="num">${fmt(r.vcu_issued)}</td>
                 <td>${esc(r.plant_status || '—')}</td>
             </tr>`).join('') || `<tr><td colspan="10" class="empty">No sites yet.</td></tr>`}
         </tbody>`;
@@ -425,12 +429,13 @@ async function openMonths() {
     el('drawerBody').innerHTML = `
         <p class="sub">Every month in the loaded window. Click one to see the sites inside it.</p>
         <div class="scroll"><table>
-        <thead><tr><th>Month</th><th class="num">Eligible kWh</th><th class="num">I-REC</th>
-            <th class="num">tCO₂e</th><th>Quality</th></tr></thead>
+        <thead><tr><th>Month</th><th class="num">Eligible kWh</th><th class="num">tCO₂e</th>
+            <th class="num">VCU</th><th>Quality</th></tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
                 <td>${monthName(m.month)}</td><td class="num">${fmt(m.eligible_kwh)}</td>
-                <td class="num">${fmt(m.irec_issued)}</td><td class="num">${fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
+                <td class="num">${fmt(m.vcu_issued)}</td>
                 <td>${pill(m.worst_flag)}</td></tr>`).join('')}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-month]').forEach((tr) => {
@@ -446,14 +451,14 @@ async function openSites(month) {
         <p class="sub">Sites contributing to ${esc(monthName(month))}. Click one to see its days.</p>
         <div class="scroll"><table>
         <thead><tr><th>Site</th><th class="num">Generated</th><th class="num">Eligible</th>
-            <th class="num">Excluded</th><th class="num">I-REC</th><th class="num">Days</th><th>Quality</th></tr></thead>
+            <th class="num">Excluded</th><th class="num">VCU</th><th class="num">Days</th><th>Quality</th></tr></thead>
         <tbody>${sites.map((s) => `
             <tr class="clickable" data-site="${esc(s.plant_name)}">
                 <td>${esc(s.plant_name)}</td>
                 <td class="num">${fmt(s.generation_kwh)}</td>
                 <td class="num">${fmt(s.eligible_kwh)}</td>
                 <td class="num">${fmt(s.excluded_kwh)}</td>
-                <td class="num">${fmt(s.irec_issued)}</td>
+                <td class="num">${fmt(s.vcu_issued)}</td>
                 <td class="num">${fmt(s.days_with_data)}/${fmt(s.days_expected)}</td>
                 <td>${pill(s.worst_flag)}</td></tr>`).join('')}
         </tbody></table></div>`;

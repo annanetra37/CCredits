@@ -1,9 +1,12 @@
 """Where the original file goes.
 
-Railway's filesystem is ephemeral, so production points at object storage.
-Local development writes to a directory. The original bytes are stored
+A container filesystem is ephemeral, so a deployment points at object storage
+and local development writes to a directory. The original bytes are stored
 unmodified alongside their hash — that file is the evidence the lineage view
-ultimately points at.
+ultimately points at, so it has to outlive the container that received it.
+
+Azure Blob Storage is the deployment target. S3 is kept for anyone running
+elsewhere; both are reached through the same two functions.
 """
 from __future__ import annotations
 
@@ -25,9 +28,51 @@ def _key(sha256: str, filename: str) -> str:
 def store(data: bytes, sha256: str, filename: str) -> str:
     """Write the original bytes. Returns the path recorded on the source file."""
     key = _key(sha256, filename)
-    if settings.storage_backend == "s3":
+    backend = settings.storage_backend.lower()
+    if backend == "azure":
+        return _store_azure(data, key)
+    if backend == "s3":
         return _store_s3(data, key)
     return _store_local(data, key)
+
+
+def _azure_container():
+    """A container client, from a connection string or a managed identity.
+
+    Managed identity is preferred: it puts no storage secret in configuration
+    at all. Assign the app's identity the Storage Blob Data Contributor role on
+    the account and set only AZURE_STORAGE_ACCOUNT.
+    """
+    from azure.storage.blob import BlobServiceClient
+
+    if settings.azure_storage_connection_string:
+        service = BlobServiceClient.from_connection_string(
+            settings.azure_storage_connection_string
+        )
+    elif settings.azure_storage_account:
+        from azure.identity import DefaultAzureCredential
+
+        service = BlobServiceClient(
+            account_url=f"https://{settings.azure_storage_account}.blob.core.windows.net",
+            credential=DefaultAzureCredential(),
+        )
+    else:
+        raise RuntimeError(
+            "STORAGE_BACKEND=azure needs AZURE_STORAGE_CONNECTION_STRING, or "
+            "AZURE_STORAGE_ACCOUNT when using a managed identity"
+        )
+    container = service.get_container_client(settings.azure_storage_container)
+    try:
+        container.create_container()
+    except Exception:
+        pass  # already there, or the identity may only write blobs
+    return container
+
+
+def _store_azure(data: bytes, key: str) -> str:
+    container = _azure_container()
+    container.upload_blob(name=key, data=data, overwrite=False)
+    return f"azure://{settings.azure_storage_container}/{key}"
 
 
 def _store_local(data: bytes, key: str) -> str:
@@ -55,6 +100,10 @@ def _store_s3(data: bytes, key: str) -> str:
 
 
 def read(storage_path: str) -> bytes:
+    if storage_path.startswith("azure://"):
+        _, _, rest = storage_path.partition("azure://")
+        _container, _, key = rest.partition("/")
+        return _azure_container().download_blob(key).readall()
     if storage_path.startswith("s3://"):
         import boto3
 
