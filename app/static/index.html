@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CCredits</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233fb950'/%3E%3Cpath d='M18 4 L8 18 h6 l-2 10 10-14 h-6 z' fill='%230d1117'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<!-- 5.7 Banner: visible on every screen -->
+<div class="banner" id="banner">Pilot data. Not verified.</div>
+
+<header class="top">
+    <div class="brand">CCredits<span id="fleetName"></span></div>
+    <nav>
+        <button data-screen="overview" class="active">Overview</button>
+        <button data-screen="fleet">Fleet</button>
+        <button data-screen="quality">Data quality</button>
+        <button data-screen="upload">Upload</button>
+    </nav>
+</header>
+
+<main>
+
+<!-- ================= OVERVIEW ================= -->
+<section class="screen active" id="screen-overview">
+    <div class="grid kpi" id="kpis"></div>
+
+    <div class="panel">
+        <h2>Generated → eligible → credits</h2>
+        <p class="sub">Every kWh either becomes a credit or peels off in grey with a reason.
+            Click any band to drill down to the rows it came from.</p>
+        <svg id="river" viewBox="0 0 1000 340" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+
+    <div class="grid two">
+        <div class="panel">
+            <h2>Calculation</h2>
+            <p class="sub">This period's actual numbers, substituted into the formula.</p>
+            <div id="calc"></div>
+        </div>
+        <div class="panel">
+            <h2>Reference data</h2>
+            <p class="sub">Versioned and dated, never constants in code.</p>
+            <div id="reference"></div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Stated assumptions</h2>
+        <p class="sub">These decide the headline number. They are on screen rather than buried,
+            and each one is an environment variable you can change.</p>
+        <div id="assumptions"></div>
+    </div>
+
+    <div class="panel">
+        <h2>Months</h2>
+        <p class="sub">Click a month to see the sites inside it.</p>
+        <div class="scroll"><table id="monthsTable"></table></div>
+    </div>
+</section>
+
+<!-- ================= FLEET (5.4) ================= -->
+<section class="screen" id="screen-fleet">
+    <div class="panel">
+        <h2>Fleet</h2>
+        <p class="sub">Sortable. Sorting by specific yield is the fastest way to find a broken site.
+            Click a row to drill into its days.</p>
+        <div class="scroll"><table id="fleetTable"></table></div>
+    </div>
+</section>
+
+<!-- ================= DATA QUALITY (5.6) ================= -->
+<section class="screen" id="screen-quality">
+    <div class="grid kpi" id="qualityKpis"></div>
+    <div class="grid two">
+        <div class="panel">
+            <h2>Gaps</h2>
+            <p class="sub">Never interpolated. A missing day stays missing and stays visible.</p>
+            <div class="scroll scroll-y"><table id="gapsTable"></table></div>
+        </div>
+        <div class="panel">
+            <h2>Suspect days</h2>
+            <p class="sub">Each with the rule that flagged it.</p>
+            <div class="scroll scroll-y"><table id="suspectsTable"></table></div>
+        </div>
+    </div>
+    <div class="panel">
+        <h2>Overlapping files</h2>
+        <p class="sub">Where a later upload covers dates an earlier one already did. Nothing is
+            deleted — the later file wins for those site-days and the earlier readings are kept
+            as superseded.</p>
+        <div class="scroll"><table id="overlapsTable"></table></div>
+    </div>
+</section>
+
+<!-- ================= UPLOAD (5.1) ================= -->
+<section class="screen" id="screen-upload">
+    <div class="panel">
+        <h2>Upload Sungrow exports</h2>
+        <p class="sub">xlsx, xls or csv. The original file is stored unmodified alongside its
+            SHA-256 — that stored file is what the lineage view ultimately points at.</p>
+        <div id="drop">
+            <div class="big">Drop files here, or click to choose</div>
+            <div class="small">Plant list, plant daily yield, device daily report — any of them, in any order</div>
+        </div>
+        <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.xlsm,.tsv" hidden>
+        <div id="uploadResults"></div>
+    </div>
+    <div class="panel">
+        <h2>Loaded files</h2>
+        <p class="sub">Bronze is immutable. Re-uploading a period adds a new file; it never
+            overwrites an old one.</p>
+        <div class="scroll"><table id="filesTable"></table></div>
+    </div>
+</section>
+
+</main>
+
+<div id="scrim"></div>
+<aside id="drawer">
+    <div class="head">
+        <div id="crumbs"></div>
+        <button class="close-x" id="drawerClose">&times;</button>
+    </div>
+    <div class="body" id="drawerBody"></div>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
