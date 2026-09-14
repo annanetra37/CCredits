@@ -30,7 +30,7 @@
     <div id="emptyState" hidden>
         <div class="panel hero">
             <h2 class="hero-title">No solar data yet</h2>
-            <p class="sub">Drop your Sungrow exports in and this page fills itself in —
+            <p class="sub">Drop your Sungrow exports in and this page fills itself in,
                 energy generated, CO₂ avoided, and the credits that follow.</p>
             <button class="primary" id="heroConnect">Connect solar data</button>
         </div>
@@ -74,6 +74,16 @@
 <section class="screen" id="screen-energy">
     <div class="grid kpi" id="energyKpis"></div>
     <div class="panel">
+        <h2>Where the energy comes from</h2>
+        <p class="sub" id="mapSub">Every province with sites, shaded by how much they generated.
+            Click one to see only that province.</p>
+        <div class="map-wrap">
+            <svg id="map" viewBox="0 0 1000 900" preserveAspectRatio="xMidYMid meet"></svg>
+            <div id="mapLegend"></div>
+        </div>
+        <div class="scroll"><table id="regionTable"></table></div>
+    </div>
+    <div class="panel">
         <h2>Energy generated</h2>
         <p class="sub">The same energy, grouped the way you want to read it.</p>
         <div class="toolbar">
@@ -90,23 +100,14 @@
         <div class="scroll"><table id="energyTable"></table></div>
     </div>
 
-    <div class="panel">
-        <h2>Where the energy comes from</h2>
-        <p class="sub" id="mapSub">Every province with sites, shaded by how much they generated.
-            Click one to see only that province.</p>
-        <div class="map-wrap">
-            <svg id="map" viewBox="0 0 1000 900" preserveAspectRatio="xMidYMid meet"></svg>
-            <div id="mapLegend"></div>
-        </div>
-        <div class="scroll"><table id="regionTable"></table></div>
-    </div>
 </section>
 
 <!-- ================= FLEET (5.4) ================= -->
 <section class="screen" id="screen-fleet">
+    <div class="grid kpi" id="fleetKpis"></div>
     <div class="panel">
         <h2>Sites</h2>
-        <p class="sub">One row per site, with its region and capacity. Every column sorts —
+        <p class="sub">One row per site, with its region and capacity. Every column sorts,
             sorting by specific yield is the fastest way to find a site that is underperforming.
             Click a row to see its daily energy.</p>
         <p class="sub" id="privacyNote"></p>
@@ -118,7 +119,7 @@
 <section class="screen" id="screen-ledger">
     <div class="panel">
         <h2>All data</h2>
-        <p class="sub">The Gold layer exactly as the calculations see it — one row per site
+        <p class="sub">The Gold layer exactly as the calculations see it, one row per site
             per month, every column that goes into a credit. This is the table the numbers on
             every other screen are drawn from.</p>
         <div class="toolbar">
@@ -130,8 +131,8 @@
     </div>
     <div class="panel">
         <h2>Check the numbers</h2>
-        <p class="sub">Recomputes every figure a second time in Python — from the spreadsheet
-            cells, never from the database views — and compares. Two independent results
+        <p class="sub">Recomputes every figure a second time in Python, from the spreadsheet
+            cells, never from the database views, and compares. Two independent results
             agreeing is the evidence the table above is right.</p>
         <button class="ghost" id="runRecon">Run the check</button>
         <div id="reconResult"></div>
@@ -147,7 +148,7 @@
             as you sent it, alongside its fingerprint, so every number stays traceable.</p>
         <div id="drop">
             <div class="big">Drop files here, or click to choose</div>
-            <div class="small">Plant daily yield, device daily report or plant list — any of them, in any order</div>
+            <div class="small">Plant daily yield, device daily report or plant list, any of them, in any order</div>
         </div>
         <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.xlsm,.tsv" hidden>
         <div id="uploadResults"></div>
