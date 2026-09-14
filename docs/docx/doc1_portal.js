@@ -59,6 +59,19 @@ add(table(
 add(spacer(80));
 add(P('Any column the parser recognised but did not use is listed as a note. Anything it could not read at all is a note too. Nothing is dropped silently.'));
 
+add(h3('If a file is rejected'));
+add(P('A rejected file says so on the upload screen, with the reason. The two you are most likely to meet:'));
+add(table(
+  ['What it says', 'What it means'],
+  [
+    ['No sheet had a header this parser recognised', 'The sheet was read but no header row was found. The parser looks past a logo row and a title row, so this usually means the export is a shape it has not seen — send the file on rather than editing it by hand.'],
+    ['Sheet could not be read / Could not open the file', 'The workbook itself is damaged, or is not really a spreadsheet despite the extension.'],
+  ], [34, 66], C.red));
+add(spacer(60));
+add(callout('Do not "fix" an export by hand before uploading.',
+  'Deleting the preamble rows or renaming a column breaks the link between the number and the file it came from, which is the whole point of the lineage. If a file is rejected, the parser should learn to read it.',
+  C.red, C.washRed));
+
 add(h3('Uploading the same file twice'));
 add(P('Nothing happens. The portal hashes every file, recognises those exact bytes, and tells you which upload it already is. It does not load it again.'));
 
