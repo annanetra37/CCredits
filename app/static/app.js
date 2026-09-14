@@ -18,22 +18,7 @@ const pill = (flag) => `<span class="pill ${esc(flag)}">${esc(flag)}</span>`;
 // A month is almost never wholly clean across a large fleet, so a bare
 // "missing" badge said nothing useful. Show how much of it is covered instead,
 // with the shortfall visible rather than named.
-const coverageCell = (row) => {
-    const expected = num(row.days_expected) || num(row.site_days) || 0;
-    const missing = num(row.days_missing), suspect = num(row.days_suspect);
-    const pct = row.coverage_pct !== undefined && row.coverage_pct !== null
-        ? num(row.coverage_pct)
-        : (expected ? 100 * (expected - missing) / expected : 0);
-    const ok = Math.max(expected - missing - suspect, 0);
-    const w = (n) => expected ? (100 * n / expected) : 0;
-    return `<div class="cov">
-        <span class="cov-pct">${fmt(pct, 0)}%</span>
-        <span class="bar" title="${fmt(ok)} ok · ${fmt(suspect)} suspect · ${fmt(missing)} missing">
-            <i class="ok" style="width:${w(ok)}%"></i>
-            <i class="suspect" style="width:${w(suspect)}%"></i>
-            <i class="missing" style="width:${w(missing)}%"></i>
-        </span></div>`;
-};
+
 
 const busy = (id, cols) => {
     const node = el(id);
@@ -49,22 +34,9 @@ const failed = (id, err, cols) => {
         : `<div class="err" style="padding:22px;text-align:center">${msg}</div>`;
 };
 
-const REASON_LABEL = {
-    quality_suspect: 'Quality suspect',
-    data_gap: 'Data gap',
-    before_grid_connection: 'Before grid connection',
-    site_inactive: 'Site inactive',
-};
-
 // The encoding colours live in the stylesheet as validated tokens; read them
 // rather than restating them, so the palette has exactly one definition.
 const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const REASON_COLOR = {
-    quality_suspect: '--suspect',
-    data_gap: '--gap',
-    before_grid_connection: '--pregrid',
-    site_inactive: '--inactive',
-};
 // Decorative washes for the stat tiles. These carry no meaning — every tile is
 // titled — so they are free to be soft and colourful.
 const TILE_TINTS = ['--accent-wash', '--eligible-wash', '--violet-wash',
@@ -74,6 +46,11 @@ let CONTEXT = null;
 
 /* ------------------------------------------------------------ navigation */
 
+const goto_ = (name) => document.querySelector(`nav button[data-screen="${name}"]`).click();
+el('brandHome').onclick = () => goto_('overview');
+el('heroConnect').onclick = () => goto_('upload');
+
+
 document.querySelectorAll('nav button').forEach((b) => {
     b.onclick = () => {
         document.querySelectorAll('nav button').forEach((x) => x.classList.remove('active'));
@@ -81,107 +58,52 @@ document.querySelectorAll('nav button').forEach((b) => {
         b.classList.add('active');
         el('screen-' + b.dataset.screen).classList.add('active');
         if (b.dataset.screen === 'energy') loadEnergy();
+        if (b.dataset.screen === 'ledger') loadLedger();
         if (b.dataset.screen === 'fleet') loadFleet();
-        if (b.dataset.screen === 'quality') loadQuality();
         if (b.dataset.screen === 'upload') loadFiles();
     };
 });
 
-/* ------------------------------------------------------ 5.2 The river */
+/* --------------------------------------------------- The flow diagram */
 
-function drawRiver(d) {
+function drawFlow(d) {
     const svg = el('river');
-    const W = 1000, H = 340, top = 40, bot = H - 30, usable = bot - top;
-    const generation = num(d.generation_kwh);
-    const eligible = num(d.eligible_kwh);
-    const exclusions = (d.exclusions || []).map((e) => ({
-        reason: e.exclusion_reason,
-        kwh: num(e.excluded_kwh),
-        days: num(e.day_count),
-        sites: num(e.site_count),
-    })).filter((e) => e.kwh > 0);
-
-    if (generation <= 0) {
-        svg.innerHTML = `<text x="500" y="170" text-anchor="middle" class="flow-sub">`
-            + `No data loaded yet — upload a Sungrow export to fill this in.</text>`;
+    const gen = num(d.generation_kwh);
+    if (gen <= 0) {
+        svg.innerHTML = `<text x="500" y="125" text-anchor="middle" class="flow-sub">`
+            + `No data yet — connect your solar data to fill this in.</text>`;
         return;
     }
-
-    // Bands need a little height to hang a two-line label off, and a little
-    // air between them, or the small exclusion streams collide.
-    const GAP = 16, MIN_BAND = 15;
-    const slack = usable - exclusions.length * GAP;
-    const scale = Math.max(slack, usable * 0.5) / generation;
-    const x0 = 150, x1 = x0 + 44, x2 = 560, x3 = 830;
-    const parts = [];
-
-    // Left node: everything generated.
-    const cEligible = token('--eligible');
-    parts.push(`<defs>
-        <linearGradient id="genGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stop-color="#6f6e69"/>
-            <stop offset="100%" stop-color="#4a4946"/>
-        </linearGradient>
-    </defs>`);
-    parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x0}" y="${top}" width="44" height="${usable}" rx="5" fill="url(#genGrad)"/>
-        <text x="${x0 - 12}" y="${top + usable / 2 - 6}" text-anchor="end" class="flow-label">Generated</text>
-        <text x="${x0 - 12}" y="${top + usable / 2 + 11}" text-anchor="end" class="flow-sub">${fmt(generation)} kWh</text>
-    </g>`);
-
-    // Ribbons: eligible first (green), then each exclusion reason in grey.
-    const ribbon = (yA, yB, h, fill, opacity) => {
-        const c = (x1 + x2) / 2;
-        return `<path d="M${x1},${yA} C${c},${yA} ${c},${yB} ${x2},${yB} L${x2},${yB + h} C${c},${yB + h} ${c},${yA + h} ${x1},${yA + h} Z"
-                 fill="${fill}" opacity="${opacity}"/>`;
-    };
-
-    let cursorLeft = top;
-    let cursorRight = top;
-    const eligibleH = Math.max(eligible * scale, MIN_BAND);
-
-    parts.push(ribbon(cursorLeft, cursorRight, eligibleH, cEligible, 0.30));
-    parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x2}" y="${cursorRight}" width="42" height="${eligibleH}" rx="5" fill="${cEligible}"/>
-        <text x="${x2 + 52}" y="${cursorRight + eligibleH / 2 - 5}" class="flow-label">Eligible</text>
-        <text x="${x2 + 52}" y="${cursorRight + eligibleH / 2 + 11}" class="flow-sub">${fmt(eligible)} kWh</text>
-    </g>`);
-    const eligibleMid = cursorRight + eligibleH / 2;
-    cursorLeft += eligibleH;
-    cursorRight += eligibleH + GAP;
-
-    exclusions.forEach((e) => {
-        const h = Math.max(e.kwh * scale, MIN_BAND);
-        const c = token(REASON_COLOR[e.reason] || '--ink-3');
-        parts.push(ribbon(cursorLeft, cursorRight, h, c, 0.30));
-        parts.push(`<g class="flow-node" data-reason="${esc(e.reason)}">
-            <rect x="${x2}" y="${cursorRight}" width="42" height="${h}" rx="5" fill="${c}"/>
-            <text x="${x2 + 52}" y="${cursorRight + h / 2 - 5}" class="flow-label">${esc(REASON_LABEL[e.reason] || e.reason)}</text>
-            <text x="${x2 + 52}" y="${cursorRight + h / 2 + 11}" class="flow-sub">${fmt(e.kwh)} kWh · ${fmt(e.days)} site-days</text>
-        </g>`);
-        cursorLeft += h;
-        cursorRight += h + GAP;
-    });
-
-    // Eligible energy continues on to the credits.
-    parts.push(`<path d="M${x2 + 42},${eligibleMid - eligibleH / 2} L${x3 - 8},${eligibleMid - 28}
-                 L${x3 - 8},${eligibleMid + 28} L${x2 + 42},${eligibleMid + eligibleH / 2} Z"
-                 fill="${cEligible}" opacity="0.20"/>`);
-    parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x3 - 8}" y="${eligibleMid - 28}" width="126" height="56" rx="10"
-              fill="${token('--eligible-wash')}" stroke="${cEligible}" stroke-width="1.5"/>
-        <text x="${x3 + 55}" y="${eligibleMid - 5}" text-anchor="middle" class="flow-label"
-              style="font-weight:700;font-size:14px">${fmt(d.vcu_issued)} VCU</text>
-        <text x="${x3 + 55}" y="${eligibleMid + 13}" text-anchor="middle" class="flow-sub">${d.net_reduction_tco2e === null ? 'no factor' : fmt(d.net_reduction_tco2e, 1) + ' tCO₂e'}</text>
-    </g>`);
-
-    parts.push(`<text x="${x0}" y="${top - 15}" class="flow-cap">All energy read from the files</text>`);
-    parts.push(`<text x="${x2}" y="${top - 15}" class="flow-cap">Split by rule</text>`);
-    parts.push(`<text x="${x3 - 8}" y="${top - 15}" class="flow-cap">Credits</text>`);
-
-    svg.innerHTML = parts.join('');
-    svg.querySelectorAll('[data-drill="months"]').forEach((g) => { g.onclick = () => openMonths(); });
-    svg.querySelectorAll('[data-reason]').forEach((g) => { g.onclick = () => openReason(g.dataset.reason); });
+    const green = token('--eligible'), accent = token('--accent'), violet = token('--pregrid');
+    const box = (x, w, fill, stroke, title, value, sub) => `
+        <g class="flow-node">
+            <rect x="${x}" y="70" width="${w}" height="110" rx="14" fill="${fill}"
+                  stroke="${stroke}" stroke-width="1.5"/>
+            <text x="${x + w / 2}" y="100" text-anchor="middle" class="flow-cap">${title}</text>
+            <text x="${x + w / 2}" y="137" text-anchor="middle" class="flow-big">${value}</text>
+            <text x="${x + w / 2}" y="160" text-anchor="middle" class="flow-sub">${sub}</text>
+        </g>`;
+    const arrow = (x, label) => `
+        <g>
+            <path d="M${x},125 L${x + 58},125" stroke="${token('--ink-3')}" stroke-width="2"
+                  marker-end="url(#arrowhead)"/>
+            <text x="${x + 29}" y="110" text-anchor="middle" class="flow-sub">${label}</text>
+        </g>`;
+    const ef = d.emission_factor === null || d.emission_factor === undefined
+        ? '' : `× ${Number(d.emission_factor)}`;
+    svg.innerHTML = `
+        <defs><marker id="arrowhead" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
+                      orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="${token('--ink-3')}"/></marker></defs>
+        ${box(40, 270, token('--accent-wash'), accent, 'ENERGY GENERATED',
+              fmt(d.generation_kwh) + ' kWh', fmt(d.generation_mwh, 1) + ' MWh')}
+        ${arrow(318, ef)}
+        ${box(385, 260, token('--violet-wash'), violet, 'EMISSION REDUCTION',
+              d.net_reduction_tco2e === null ? '—' : fmt(d.net_reduction_tco2e, 2),
+              'tonnes of CO₂ avoided')}
+        ${arrow(655, '1 : 1')}
+        ${box(725, 235, token('--eligible-wash'), green, 'CREDITS (VCUS)',
+              fmt(d.vcu_issued, 2), `${esc(d.currency)} ${fmt(d.total_revenue, 0)} indicative`)}`;
+    svg.querySelectorAll('.flow-node').forEach((g) => { g.onclick = () => openMonths(); });
 }
 
 /* ------------------------------------------------------------- overview */
@@ -189,23 +111,26 @@ function drawRiver(d) {
 async function loadOverview() {
     // Not 'reference' or 'assumptions': those are filled from /api/context by
     // renderContext(), and blanking them here would leave them blank for good.
-    busy('kpis'); busy('monthsTable', 8); busy('calc');
-    const [summary, river, calc, months] = await Promise.all([
-        api('/api/summary'), api('/api/river'), api('/api/calculation'), api('/api/drill/months'),
+    busy('kpis'); busy('monthsTable', 6); busy('calc');
+    const [summary, flow, calc, months] = await Promise.all([
+        api('/api/summary'), api('/api/flow'), api('/api/calculation'), api('/api/drill/months'),
     ]);
 
-    const cur = river.currency || 'USD';
+    const cur = flow.currency || 'USD';
+    el('contextLine').textContent =
+        `${fmt(summary.site_count)} sites · ${fmt(summary.installed_kwp, 0)} kWp installed · `
+        + `${fmt(summary.days_with_data)} days of readings · `
+        + `${summary.window_start || '—'} to ${summary.window_end || '—'}`;
+
     el('kpis').innerHTML = [
-        ['Energy generated', fmt(summary.generation_kwh), 'kWh', `${summary.site_count} sites · ${summary.window_start || '—'} to ${summary.window_end || '—'}`],
-        ['Eligible energy', fmt(summary.eligible_kwh), 'kWh', `${fmt(summary.excluded_kwh)} kWh excluded with a reason`],
-        ['Emission reduction', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tCO₂e', 'Eligible MWh × emission factor'],
-        ['VCUs issuable', fmt(summary.vcu_issued), '', `${fmt(summary.carry_forward_tco2e, 3)} tCO₂e carried forward`],
-        ['Indicative revenue', `${cur} ${fmt(summary.total_revenue, 0)}`, '', 'VCUs at the reference price below'],
-        ['Installed capacity', fmt(summary.installed_kwp, 0), 'kWp',
-            summary.sites_without_capacity
-                ? `across ${summary.site_count} sites · ${summary.sites_without_capacity} with no capacity on file`
-                : `across ${summary.site_count} sites`],
-        ['Data coverage', fmt(summary.coverage_pct, 1), '%', `${fmt(summary.days_missing)} of ${fmt(summary.site_days)} site-days have no reading`],
+        ['Energy generated', fmt(summary.generation_kwh), 'kWh',
+         'everything the sites produced'],
+        ['CO₂ avoided', summary.net_reduction_tco2e === null ? '—' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
+         'energy × the Armenian grid factor'],
+        ['Credits earned', fmt(summary.vcu_issued, 2), 'VCUs',
+         'one tonne avoided is one credit'],
+        [`Indicative value`, `${cur} ${fmt(summary.total_revenue, 0)}`, '',
+         `at ${cur} ${fmt(calc.vcu_price_per_tco2e, 0)} per tonne`],
     ].map(([label, value, unit, foot], i) => `
         <div class="kpi-card clickable" data-open="months"
              style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
@@ -213,9 +138,15 @@ async function loadOverview() {
             <div class="value">${value}<span class="unit">${unit}</span></div>
             <div class="foot">${foot}</div>
         </div>`).join('');
+
     el('kpis').querySelectorAll('[data-open="months"]').forEach((c) => { c.onclick = () => openMonths(); });
 
-    drawRiver(river);
+    const loaded = num(summary.generation_kwh) > 0;
+    el('emptyState').hidden = loaded;
+    el('hasData').hidden = !loaded;
+    if (!loaded) return;
+
+    drawFlow(flow);
 
     el('calc').innerHTML = calc.steps.map((s) => `
         <div class="step">
@@ -223,37 +154,22 @@ async function loadOverview() {
             <div class="formula">${esc(s.formula)}</div>
             <div class="subst">${esc(s.substituted)}</div>
             <div class="result">${esc(s.result)}</div>
-            ${s.warning ? `<div class="unverified">⚠ ${esc(s.warning)}</div>` : ''}
-            <div class="src">${esc(s.source)}</div>
-        </div>`).join('') + (calc.emission_factor !== null && calc.emission_factor !== undefined ? `
-        <div class="step" style="border-left-color:transparent">
-            <div class="formula">Emission factor ${esc(String(calc.emission_factor))} tCO₂e/MWh
-                — ${esc((calc.factor_type || '').replace(/_/g, ' '))}, vintage ${esc(calc.factor_vintage)},
-                published validity ${esc(calc.factor_valid_from)} → ${esc(calc.factor_valid_to || 'open')}</div>
-            <div class="src">${esc(calc.factor_project_types || '')}<br>${esc(calc.factor_source)}
-                ${calc.factor_verified ? '' : ' <span class="pill missing">unverified</span>'}</div>
-        </div>` : `
-        <div class="step" style="border-left-color:transparent">
-            <div class="unverified">⚠ No emission factor applies to this period, so no
-                emission reduction and no VCUs are claimed. Nothing stands in for it.</div>
-        </div>`);
+            ${s.warning ? `<div class="unverified">${esc(s.warning)}</div>` : ''}
+
+        </div>`).join('');
 
     el('monthsTable').innerHTML = `
         <thead><tr>
-            <th>Month</th><th class="num">Generated kWh</th><th class="num">Eligible kWh</th>
-            <th class="num">Excluded kWh</th><th class="num">tCO₂e</th><th class="num">VCU</th>
-            <th class="num">Revenue</th><th class="num">Coverage</th>
+            <th>Month</th><th class="num">Generated kWh</th>
+            <th class="num">tCO₂e</th><th class="num">VCU</th><th class="num">Revenue</th>
         </tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
                 <td>${monthName(m.month)}</td>
                 <td class="num">${fmt(m.generation_kwh)}</td>
-                <td class="num">${fmt(m.eligible_kwh)}</td>
-                <td class="num">${fmt(m.excluded_kwh)}</td>
                 <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
-                <td class="num">${fmt(m.vcu_issued)}</td>
+                <td class="num">${fmt(m.vcu_issued, 2)}</td>
                 <td class="num">${cur} ${fmt(m.total_revenue, 0)}</td>
-                <td class="num">${coverageCell(m)}</td>
             </tr>`).join('') || `<tr><td colspan="8" class="empty">No data loaded yet.</td></tr>`}
         </tbody>`;
     el('monthsTable').querySelectorAll('[data-month]').forEach((tr) => {
@@ -265,13 +181,7 @@ function renderContext() {
     el('banner').textContent = CONTEXT.banner;
     el('fleetName').textContent = CONTEXT.fleet_name ? `${CONTEXT.fleet_name} pilot` : '';
 
-    el('assumptions').innerHTML = CONTEXT.assumptions.map((a) => `
-        <div class="assumption">
-            <div class="a-label">${esc(a.label)}</div>
-            <div class="a-value">${esc(a.value)}</div>
-            <div class="a-note">${esc(a.note)}</div>
-            <div class="a-env">${esc(a.env)}</div>
-        </div>`).join('');
+
 
     const active = (CONTEXT.emission_factors || []).find((f) => f.active);
     const others = (CONTEXT.emission_factors || []).filter((f) => !f.active);
@@ -361,7 +271,9 @@ async function loadEnergy() {
     busy('energyKpis'); busy('energyTable', 8);
     let d;
     try {
-        d = await api(`/api/energy?group=${energyGroup}` + (energySite ? `&site=${encodeURIComponent(energySite)}` : ''));
+        d = await api(`/api/energy?group=${energyGroup}`
+            + (energySite ? `&site=${encodeURIComponent(energySite)}` : '')
+            + (activeRegion ? `&region=${encodeURIComponent(activeRegion)}` : ''));
     } catch (err) { failed('energyKpis', err); return failed('energyTable', err, 8); }
 
     // Populate the site filter once.
@@ -376,10 +288,8 @@ async function loadEnergy() {
     const t = d.totals || {};
     el('energyKpis').innerHTML = [
         ['Energy generated', fmt(t.generation_kwh), 'kWh', `${t.site_count || 0} site(s) in view`],
-        ['Eligible energy', fmt(t.eligible_kwh), 'kWh', `${fmt(t.excluded_kwh)} kWh excluded with a reason`],
-        ['Installed capacity', fmt(t.installed_kwp, 0), 'kWp', t.sites_without_capacity
-            ? `${t.sites_without_capacity} site(s) have no capacity on file`
-            : 'from the plant information columns'],
+        ['Installed capacity', fmt(t.installed_kwp, 0), 'kWp', 'from the plant information columns'],
+        ['Days of data', fmt(t.days_with_data), '', 'readings actually present in the files'],
     ].map(([label, value, unit, foot], i) => `
         <div class="kpi-card" style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
             <div class="label">${label}</div>
@@ -387,25 +297,23 @@ async function loadEnergy() {
             <div class="foot">${foot}</div>
         </div>`).join('');
 
+    drawMap();
     const head = { month: 'Month', day: 'Day', site: 'Site', region: 'Region' }[d.group];
     const label = BUCKET_LABEL[d.group];
     el('energyTable').innerHTML = `
         <thead><tr>
-            <th>${head}</th><th class="num">Generated kWh</th><th class="num">Eligible kWh</th>
-            <th class="num">Excluded kWh</th><th class="num">kWp</th>
-            <th class="num">kWh/kWp/day</th><th class="num">Sites</th><th class="num">Coverage</th>
+            <th>${head}</th><th class="num">Generated kWh</th><th class="num">kWp</th>
+            <th class="num">kWh/kWp/day</th><th class="num">Days</th><th class="num">Sites</th>
         </tr></thead>
         <tbody>${(d.rows || []).map((r) => `
-            <tr${d.group === 'site' ? ' class="clickable" data-site="' + esc(r.bucket) + '"' : ''}>
+            <tr>
                 <td>${esc(label(r.bucket))}</td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
-                <td class="num">${fmt(r.eligible_kwh)}</td>
-                <td class="num">${fmt(r.excluded_kwh)}</td>
                 <td class="num">${r.installed_kwp === null ? '—' : fmt(r.installed_kwp, 0)}</td>
                 <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
+                <td class="num">${fmt(r.days_with_data)}</td>
                 <td class="num">${fmt(r.site_count)}</td>
-                <td class="num">${coverageCell({ ...r, days_expected: r.site_days })}</td>
-            </tr>`).join('') || `<tr><td colspan="8" class="empty">Nothing to show yet.</td></tr>`}
+            </tr>`).join('') || `<tr><td colspan="6" class="empty">Nothing to show yet.</td></tr>`}
         </tbody>`;
 }
 
@@ -428,7 +336,6 @@ function renderFleet() {
         ['installed_kwp', 'kWp', 'num1'],
         ['grid_connection_date', 'Grid connection', 'text'],
         ['generation_kwh', 'Total kWh', 'num'],
-        ['eligible_kwh', 'Eligible kWh', 'num'],
         ['specific_yield_per_day', 'kWh/kWp/day', 'num2'],
         ['vcu_issued', 'VCU', 'num'],
     ];
@@ -448,7 +355,7 @@ function renderFleet() {
         <thead><tr>${cols.map(([k, label, type]) => `
             <th class="sortable ${type === 'text' ? '' : 'num'}" data-key="${k}">${label}
                 <span class="arrow">${fleetSort.key === k ? (fleetSort.dir > 0 ? '▲' : '▼') : ''}</span></th>`).join('')}
-            <th class="num">Coverage</th><th>Status</th></tr></thead>
+            <th class="num">Days</th><th>Status</th></tr></thead>
         <tbody>${rows.map((r) => `
             <tr class="clickable" data-site="${esc(r.site_code)}">
                 <td><strong>${esc(r.site)}</strong></td>
@@ -456,10 +363,9 @@ function renderFleet() {
                 <td class="num">${fmt(r.installed_kwp, 1)}</td>
                 <td>${esc(r.grid_connection_date || '—')}</td>
                 <td class="num">${fmt(r.generation_kwh)}</td>
-                <td class="num">${fmt(r.eligible_kwh)}</td>
                 <td class="num">${r.specific_yield_per_day === null ? '—' : fmt(r.specific_yield_per_day, 2)}</td>
-                <td class="num">${fmt(r.vcu_issued)}</td>
-                <td class="num">${coverageCell(r)}</td>
+                <td class="num">${fmt(r.vcu_issued, 2)}</td>
+                <td class="num">${fmt(r.days_with_data)}</td>
                 <td>${esc(r.plant_status || '—')}</td>
             </tr>`).join('') || `<tr><td colspan="10" class="empty">No sites yet.</td></tr>`}
         </tbody>`;
@@ -472,71 +378,6 @@ function renderFleet() {
         };
     });
     el('fleetTable').querySelectorAll('[data-site]').forEach((tr) => {
-        tr.onclick = () => openDays(tr.dataset.site, null);
-    });
-}
-
-/* ------------------------------------------------- 5.6 Data quality */
-
-async function loadQuality() {
-    busy('qualityKpis'); busy('gapsTable', 4); busy('suspectsTable', 4); busy('overlapsTable', 4);
-    let q;
-    try {
-        q = await api('/api/quality');
-    } catch (err) {
-        ['qualityKpis', 'gapsTable', 'suspectsTable', 'overlapsTable']
-            .forEach((id) => failed(id, err, 4));
-        return;
-    }
-    const total = num(q.site_days) || 1;
-    el('qualityKpis').innerHTML = `
-        <div class="kpi-card"><div class="label">Coverage</div>
-            <div class="value">${fmt(q.coverage_pct, 1)}<span class="unit">%</span></div>
-            <div class="foot">${fmt(q.site_days)} site-days in the loaded window</div>
-            <div class="bar" style="margin-top:9px">
-                <i class="ok" style="width:${(num(q.days_ok) / total) * 100}%"></i>
-                <i class="suspect" style="width:${(num(q.days_suspect) / total) * 100}%"></i>
-                <i class="missing" style="width:${(num(q.days_missing) / total) * 100}%"></i>
-            </div></div>
-        <div class="kpi-card"><div class="label">Days ok</div><div class="value">${fmt(q.days_ok)}</div></div>
-        <div class="kpi-card"><div class="label">Days suspect</div><div class="value">${fmt(q.days_suspect)}</div>
-            <div class="foot">Excluded, with the rule named</div></div>
-        <div class="kpi-card"><div class="label">Days missing</div><div class="value">${fmt(q.days_missing)}</div>
-            <div class="foot">Never interpolated</div></div>
-        <div class="kpi-card"><div class="label">Superseded site-days</div><div class="value">${fmt(q.superseded_count)}</div>
-            <div class="foot">Kept, not deleted</div></div>`;
-
-    el('gapsTable').innerHTML = `
-        <thead><tr><th>Site</th><th>From</th><th>To</th><th class="num">Days</th></tr></thead>
-        <tbody>${(q.gaps || []).map((g) => `
-            <tr class="clickable" data-site="${esc(g.site_code)}">
-                <td><strong>${esc(g.site)}</strong>${g.region ? ` <span class="src-note">${esc(g.region)}</span>` : ''}</td>
-                <td>${dayName(g.gap_start)}</td>
-                <td>${dayName(g.gap_end)}</td><td class="num">${fmt(g.days)}</td>
-            </tr>`).join('') || `<tr><td colspan="4" class="empty">No gaps. Every expected site-day has data.</td></tr>`}
-        </tbody>`;
-
-    el('suspectsTable').innerHTML = `
-        <thead><tr><th>Site</th><th>Date</th><th class="num">kWh</th><th>Rule that flagged it</th></tr></thead>
-        <tbody>${(q.suspects || []).map((s) => `
-            <tr class="clickable" data-site="${esc(s.site_code)}">
-                <td><strong>${esc(s.site)}</strong>${s.region ? ` <span class="src-note">${esc(s.region)}</span>` : ''}</td><td>${dayName(s.reading_date)}</td>
-                <td class="num">${fmt(s.generation_kwh, 1)}</td>
-                <td style="color:var(--amber)">${esc(s.flag_reason || '')}</td>
-            </tr>`).join('') || `<tr><td colspan="4" class="empty">No suspect days.</td></tr>`}
-        </tbody>`;
-
-    el('overlapsTable').innerHTML = `
-        <thead><tr><th>New file</th><th>Overlaps</th><th>Period</th><th>Grain</th></tr></thead>
-        <tbody>${(q.overlaps || []).map((o) => `
-            <tr><td>#${o.new_file_id} ${esc(o.new_filename)}</td>
-                <td>#${o.existing_file_id} ${esc(o.existing_filename)}</td>
-                <td>${dayName(o.overlap_start)} → ${dayName(o.overlap_end)}</td>
-                <td>${esc(o.grain)}</td></tr>`).join('')
-            || `<tr><td colspan="4" class="empty">No overlapping uploads.</td></tr>`}
-        </tbody>`;
-
-    document.querySelectorAll('#gapsTable [data-site], #suspectsTable [data-site]').forEach((tr) => {
         tr.onclick = () => openDays(tr.dataset.site, null);
     });
 }
@@ -570,14 +411,13 @@ async function openMonths() {
     el('drawerBody').innerHTML = `
         <p class="sub">Every month in the loaded window. Click one to see the sites inside it.</p>
         <div class="scroll"><table>
-        <thead><tr><th>Month</th><th class="num">Eligible kWh</th><th class="num">tCO₂e</th>
-            <th class="num">VCU</th><th>Quality</th></tr></thead>
+        <thead><tr><th>Month</th><th class="num">Generated kWh</th><th class="num">tCO₂e</th>
+            <th class="num">VCU</th></tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
-                <td>${monthName(m.month)}</td><td class="num">${fmt(m.eligible_kwh)}</td>
+                <td>${monthName(m.month)}</td><td class="num">${fmt(m.generation_kwh)}</td>
                 <td class="num">${m.net_reduction_tco2e === null ? '—' : fmt(m.net_reduction_tco2e, 2)}</td>
-                <td class="num">${fmt(m.vcu_issued)}</td>
-                <td>${pill(m.worst_flag)}</td></tr>`).join('')}
+                <td class="num">${fmt(m.vcu_issued, 2)}</td></tr>`).join('')}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-month]').forEach((tr) => {
         tr.onclick = () => openSites(tr.dataset.month);
@@ -591,17 +431,15 @@ async function openSites(month) {
     el('drawerBody').innerHTML = `
         <p class="sub">Sites contributing to ${esc(monthName(month))}. Click one to see its days.</p>
         <div class="scroll"><table>
-        <thead><tr><th>Site</th><th class="num">Generated</th><th class="num">Eligible</th>
-            <th class="num">Excluded</th><th class="num">VCU</th><th class="num">Days</th><th class="num">Coverage</th></tr></thead>
+        <thead><tr><th>Site</th><th class="num">Generated kWh</th><th class="num">tCO₂e</th>
+            <th class="num">VCU</th><th class="num">Days</th></tr></thead>
         <tbody>${sites.map((s) => `
             <tr class="clickable" data-site="${esc(s.site_code)}">
                 <td><strong>${esc(s.site)}</strong>${s.region ? ` <span class="src-note">${esc(s.region)}</span>` : ''}</td>
                 <td class="num">${fmt(s.generation_kwh)}</td>
-                <td class="num">${fmt(s.eligible_kwh)}</td>
-                <td class="num">${fmt(s.excluded_kwh)}</td>
-                <td class="num">${fmt(s.vcu_issued)}</td>
-                <td class="num">${fmt(s.days_with_data)}/${fmt(s.days_expected)}</td>
-                <td class="num">${coverageCell(s)}</td></tr>`).join('')}
+                <td class="num">${fmt(s.net_reduction_tco2e, 2)}</td>
+                <td class="num">${fmt(s.vcu_issued, 2)}</td>
+                <td class="num">${fmt(s.days_with_data)}</td></tr>`).join('')}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-site]').forEach((tr) => {
         tr.onclick = () => openDays(tr.dataset.site, month);
@@ -617,20 +455,19 @@ async function openDays(site, month) {
     const url = `/api/drill/sites/${encodeURIComponent(site)}/days` + (month ? `?month=${month}` : '');
     const days = await api(url);
     el('drawerBody').innerHTML = `
-        <p class="sub">Every day in the window for ${esc(site)}, including the days with no data.
-            Click a day to see the spreadsheet cells behind it.</p>
+        <p class="sub">Every day ${esc(site)} reported. Click a day to see the spreadsheet
+            cells behind it.</p>
         <div class="scroll"><table>
-        <thead><tr><th>Date</th><th class="num">kWh</th><th class="num">Eligible</th>
-            <th class="num">kWh/kWp</th><th>Flag</th><th>Reason</th></tr></thead>
+        <thead><tr><th>Date</th><th class="num">kWh</th><th class="num">kWh/kWp</th>
+            <th class="num">Devices</th><th>From file</th></tr></thead>
         <tbody>${days.map((d) => `
             <tr class="clickable" data-day="${d.reading_date}">
                 <td>${dayName(d.reading_date)}</td>
                 <td class="num">${fmt(d.generation_kwh, 1)}</td>
-                <td class="num">${fmt(d.eligible_kwh, 1)}</td>
                 <td class="num">${d.specific_yield === null ? '—' : fmt(d.specific_yield, 2)}</td>
-                <td>${pill(d.flag)}</td>
-                <td style="color:var(--muted)">${esc(d.flag_reason || REASON_LABEL[d.exclusion_reason] || '')}</td>
-            </tr>`).join('')}
+                <td class="num">${d.device_count ? fmt(d.device_count) : '—'}</td>
+                <td class="src-note">${esc(d.filename || '')}</td>
+            </tr>`).join('') || `<tr><td colspan="5" class="empty">No readings for this site.</td></tr>`}
         </tbody></table></div>`;
     el('drawerBody').querySelectorAll('[data-day]').forEach((tr) => {
         tr.onclick = () => openReadings(site, tr.dataset.day, month);
@@ -667,71 +504,133 @@ async function openReadings(site, day, month) {
         </tbody></table></div>`;
 }
 
-async function openReason(reason) {
-    crumbs = [{ label: REASON_LABEL[reason] || reason, go: () => openReason(reason) }];
-    renderCrumbs(); openDrawer(); drawerLoading();
-    const q = await api('/api/quality');
-    const rows = reason === 'quality_suspect' ? (q.suspects || []) : [];
-    const gaps = reason === 'data_gap' ? (q.gaps || []) : [];
-    let body = `<p class="sub">Energy excluded from the credit calculation because of this rule.</p>`;
-    if (rows.length) {
-        body += `<div class="scroll"><table>
-            <thead><tr><th>Site</th><th>Date</th><th class="num">kWh</th><th>Rule</th></tr></thead>
-            <tbody>${rows.map((s) => `<tr class="clickable" data-site="${esc(s.site_code)}" data-day="${s.reading_date}">
-                <td><strong>${esc(s.site)}</strong></td><td>${dayName(s.reading_date)}</td>
-                <td class="num">${fmt(s.generation_kwh, 1)}</td>
-                <td style="color:var(--suspect-ink)">${esc(s.flag_reason || '')}</td></tr>`).join('')}</tbody></table></div>`;
-    } else if (gaps.length) {
-        body += `<div class="scroll"><table>
-            <thead><tr><th>Site</th><th>From</th><th>To</th><th class="num">Days</th></tr></thead>
-            <tbody>${gaps.map((g) => `<tr class="clickable" data-site="${esc(g.site_code)}">
-                <td><strong>${esc(g.site)}</strong></td><td>${dayName(g.gap_start)}</td>
-                <td>${dayName(g.gap_end)}</td><td class="num">${fmt(g.days)}</td></tr>`).join('')}</tbody></table></div>`;
-    } else {
-        body += `<p class="sub">Open the Fleet or Data quality screen to see the sites this applies to.</p>`;
+/* --------------------------------------------------------------- The map */
+
+let MAP = null, activeRegion = '';
+
+// Province names as the address column writes them, mapped to the boundary
+// file's spelling. Armenian place names transliterate several ways.
+const REGION_ALIASES = {
+    'erevan': 'Yerevan', 'yerevan': 'Yerevan', 'jerevan': 'Yerevan',
+    'vayots dzor': 'Vayots Dzor', "vayots' dzor": 'Vayots Dzor', 'vayotsdzor': 'Vayots Dzor',
+    'gegharkunik': 'Gegharkunik', 'geghark\'unik': 'Gegharkunik',
+    'aragatsotn': 'Aragatsotn', 'armavir': 'Armavir', 'ararat': 'Ararat',
+    'kotayk': 'Kotayk', 'lori': 'Lori', 'shirak': 'Shirak',
+    'syunik': 'Syunik', 'syunik\'': 'Syunik', 'tavush': 'Tavush',
+};
+const canonicalRegion = (name) => REGION_ALIASES[String(name || '').trim().toLowerCase()] || name;
+
+async function drawMap() {
+    if (!MAP) {
+        try { MAP = await api('/static/armenia.json'); }
+        catch { el('map').innerHTML = ''; return; }
     }
-    el('drawerBody').innerHTML = body;
-    el('drawerBody').querySelectorAll('[data-site]').forEach((tr) => {
-        tr.onclick = () => (tr.dataset.day ? openReadings(tr.dataset.site, tr.dataset.day, null) : openDays(tr.dataset.site, null));
+    let rows;
+    try { rows = await api('/api/regions'); } catch { return; }
+
+    const byProvince = {};
+    let max = 0;
+    rows.forEach((r) => {
+        const key = canonicalRegion(r.region);
+        byProvince[key] = (byProvince[key] || 0) + num(r.generation_kwh);
+        max = Math.max(max, byProvince[key]);
     });
+
+    // One hue, light to dark, because this is magnitude and not identity.
+    const RAMP = ['#e9f1fd', '#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95'];
+    const shade = (v) => {
+        if (!v) return '#f2f2ef';
+        const i = Math.min(RAMP.length - 1, Math.max(1, Math.ceil((v / max) * (RAMP.length - 1))));
+        return RAMP[i];
+    };
+
+    const svg = el('map');
+    svg.setAttribute('viewBox', MAP.viewBox);
+    svg.innerHTML = Object.entries(MAP.provinces).map(([name, d]) => {
+        const v = byProvince[name] || 0;
+        const on = activeRegion && canonicalRegion(activeRegion) === name;
+        return `<path d="${d}" fill="${shade(v)}"
+            stroke="${on ? token('--accent-ink') : '#ffffff'}" stroke-width="${on ? 3 : 1.5}"
+            class="province${v ? ' has-data' : ''}" data-region="${esc(name)}"
+            ><title>${esc(name)}: ${v ? fmt(v) + ' kWh' : 'no sites'}</title></path>`;
+    }).join('');
+
+    svg.querySelectorAll('.province.has-data').forEach((pth) => {
+        pth.onclick = () => {
+            const name = pth.dataset.region;
+            activeRegion = (activeRegion && canonicalRegion(activeRegion) === name) ? '' : name;
+            loadEnergy();
+        };
+    });
+
+    el('mapLegend').innerHTML = `<span class="legend-label">less</span>`
+        + RAMP.slice(1).map((c) => `<i style="background:${c}"></i>`).join('')
+        + `<span class="legend-label">more energy</span>`;
+
+    el('regionTable').innerHTML = `
+        <thead><tr><th>Province</th><th class="num">Generated kWh</th><th class="num">Sites</th>
+            <th class="num">kWp</th><th class="num">VCU</th></tr></thead>
+        <tbody>${rows.map((r) => `
+            <tr class="clickable${activeRegion === r.region ? ' row-on' : ''}" data-region="${esc(r.region)}">
+                <td><strong>${esc(r.region)}</strong></td>
+                <td class="num">${fmt(r.generation_kwh)}</td>
+                <td class="num">${fmt(r.site_count)}</td>
+                <td class="num">${r.installed_kwp === null ? '—' : fmt(r.installed_kwp, 0)}</td>
+                <td class="num">${fmt(r.vcu_issued, 2)}</td>
+            </tr>`).join('') || `<tr><td colspan="5" class="empty">No regions yet.</td></tr>`}
+        </tbody>`;
+    el('regionTable').querySelectorAll('[data-region]').forEach((tr) => {
+        tr.onclick = () => {
+            activeRegion = activeRegion === tr.dataset.region ? '' : tr.dataset.region;
+            loadEnergy();
+        };
+    });
+    el('mapSub').textContent = activeRegion
+        ? `Showing ${activeRegion} only. Click it again to see the whole fleet.`
+        : 'Every province with sites, shaded by how much they generated. Click one to see only that province.';
 }
 
-/* -------------------------------------------------- Reconciliation */
+/* ------------------------------------------------- All data (Gold layer) */
 
-el('runRecon').onclick = async () => {
-    const btn = el('runRecon');
-    btn.disabled = true;
-    el('reconResult').innerHTML = `<div class="loading">Re-reading the original files and
-        recomputing every figure…</div>`;
-    try {
-        const d = await api('/api/reconcile');
-        const badge = (st) => st === 'pass' ? '<span class="pill ok">pass</span>'
-                            : st === 'fail' ? '<span class="pill missing">fail</span>'
-                            : '<span class="pill grey">skipped</span>';
-        el('reconResult').innerHTML = `
-            <div class="${d.ok ? 'recon-ok' : 'unverified'}" style="margin-top:14px">
-                ${d.ok
-                    ? `✓ ${d.passed} checks passed. Every figure was reproduced independently and matched.`
-                    : `⚠ ${d.failed} of ${d.passed + d.failed} checks did not pass. Details below.`}
-                ${d.skipped ? ` ${d.skipped} skipped.` : ''}
-            </div>
-            <div class="scroll" style="margin-top:14px"><table>
-            <thead><tr><th>Check</th><th>Result</th><th class="num">Views say</th>
-                <th class="num">Recomputed</th></tr></thead>
-            <tbody>${d.checks.map((k) => `
-                <tr>
-                    <td>${esc(k.title)}
-                        <div class="src-note">${esc(k.detail || '')}</div>
-                        ${(k.offenders || []).map((o) => `<div class="src-note" style="color:var(--gap-ink)">— ${esc(o)}</div>`).join('')}</td>
-                    <td>${badge(k.status)}</td>
-                    <td class="num mono">${esc(k.app || '—')}</td>
-                    <td class="num mono">${esc(k.recomputed || '—')}</td>
-                </tr>`).join('')}
-            </tbody></table></div>`;
-    } catch (err) {
-        el('reconResult').innerHTML = `<div class="err" style="margin-top:14px">Could not run: ${esc(err.message)}</div>`;
+async function loadLedger() {
+    busy('ledgerTable', 12);
+    let d;
+    try { d = await api('/api/ledger' + (ledgerSite ? `?site=${encodeURIComponent(ledgerSite)}` : '')); }
+    catch (err) { return failed('ledgerTable', err, 12); }
+
+    const sel = el('ledgerSite');
+    if (sel.options.length <= 1) {
+        try {
+            (await api('/api/fleet')).forEach((s) => sel.add(new Option(s.site, s.site_code)));
+        } catch { /* the filter is a convenience */ }
     }
-    btn.disabled = false;
+
+    const cols = [
+        ['site', 'Site', 0], ['region', 'Region', 0], ['month', 'Month', 0],
+        ['installed_kwp', 'kWp', 1], ['days_with_data', 'Days', 0],
+        ['generation_kwh', 'Generated kWh', 1], ['generation_mwh', 'MWh', 3],
+        ['emission_factor', 'Factor', 4], ['net_reduction_tco2e', 'tCO₂e', 4],
+        ['vcu_issued', 'VCU', 4], ['vcu_price_per_tco2e', 'Price', 2],
+        ['total_revenue', 'Revenue', 2],
+    ];
+    el('ledgerTable').innerHTML = `
+        <thead><tr>${cols.map(([k, label, dp]) =>
+            `<th class="${dp === 0 ? '' : 'num'}">${label}</th>`).join('')}</tr></thead>
+        <tbody>${(d.rows || []).map((r) => `
+            <tr>${cols.map(([k, label, dp]) => {
+                const v = r[k];
+                if (v === null || v === undefined) return '<td class="num">—</td>';
+                if (dp === 0) return `<td>${k === 'month' ? esc(monthName(v)) : esc(v)}</td>`;
+                return `<td class="num">${fmt(v, dp)}</td>`;
+            }).join('')}</tr>`).join('')
+            || `<tr><td colspan="${cols.length}" class="empty">Nothing loaded yet.</td></tr>`}
+        </tbody>`;
+}
+
+let ledgerSite = '';
+el('ledgerSite').onchange = () => { ledgerSite = el('ledgerSite').value; loadLedger(); };
+el('downloadCsv').onclick = () => {
+    window.location = '/api/ledger.csv' + (ledgerSite ? `?site=${encodeURIComponent(ledgerSite)}` : '');
 };
 
 /* ------------------------------------------------------ 5.1 Upload */

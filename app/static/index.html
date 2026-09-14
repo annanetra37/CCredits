@@ -13,12 +13,12 @@
 <div class="banner" id="banner">Pilot data. Not verified.</div>
 
 <header class="top">
-    <div class="brand">CCredits<span id="fleetName"></span></div>
+    <button class="brand" id="brandHome" title="Back to the overview">CCredits<span id="fleetName"></span></button>
     <nav>
         <button data-screen="overview" class="active">Overview</button>
         <button data-screen="energy">Energy</button>
         <button data-screen="fleet">Sites</button>
-        <button data-screen="quality">Data quality</button>
+        <button data-screen="ledger">All data</button>
         <button data-screen="upload">Connect solar data</button>
     </nav>
 </header>
@@ -27,42 +27,46 @@
 
 <!-- ================= OVERVIEW ================= -->
 <section class="screen active" id="screen-overview">
-    <div class="grid kpi" id="kpis"></div>
-
-    <div class="panel">
-        <h2>Generated → eligible → credits</h2>
-        <p class="sub">Every kWh either becomes a credit or peels off with a reason — each
-            exclusion stream has its own colour and its own label. Click any band to drill
-            down to the rows it came from.</p>
-        <svg id="river" viewBox="0 0 1000 340" preserveAspectRatio="xMidYMid meet"></svg>
-    </div>
-
-    <div class="grid two">
-        <div class="panel">
-            <h2>Calculation</h2>
-            <p class="sub">This period's actual numbers, substituted into the formula.</p>
-            <div id="calc"></div>
-        </div>
-        <div class="panel">
-            <h2>What turns energy into credits</h2>
-            <p class="sub">Two numbers do all the work: how much CO₂ a megawatt-hour of
-                Armenian grid electricity would have emitted, and what a tonne of CO₂ sells for.
-                Both are shown here with where they came from.</p>
-            <div id="reference"></div>
+    <div id="emptyState" hidden>
+        <div class="panel hero">
+            <h2 class="hero-title">No solar data yet</h2>
+            <p class="sub">Drop your Sungrow exports in and this page fills itself in —
+                energy generated, CO₂ avoided, and the credits that follow.</p>
+            <button class="primary" id="heroConnect">Connect solar data</button>
         </div>
     </div>
 
-    <div class="panel">
-        <h2>Stated assumptions</h2>
-        <p class="sub">These decide the headline number. They are on screen rather than buried,
-            and each one is an environment variable you can change.</p>
-        <div id="assumptions"></div>
-    </div>
+    <div id="hasData" hidden>
+        <p class="context-line" id="contextLine"></p>
+        <div class="grid kpi" id="kpis"></div>
 
-    <div class="panel">
-        <h2>Months</h2>
-        <p class="sub">Click a month to see the sites inside it.</p>
-        <div class="scroll"><table id="monthsTable"></table></div>
+        <div class="panel">
+            <h2>How the credits are made</h2>
+            <p class="sub">Three steps, no exceptions. Every kilowatt-hour these sites generated
+                becomes a tonne of CO₂ avoided, and every tonne avoided is one credit.</p>
+            <svg id="river" viewBox="0 0 1000 250" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+
+        <div class="grid two">
+            <div class="panel">
+                <h2>The arithmetic</h2>
+                <p class="sub">This period's real numbers, put into the formula.</p>
+                <div id="calc"></div>
+            </div>
+            <div class="panel">
+                <h2>The two numbers behind it</h2>
+                <p class="sub">Everything else comes from your files. These two come from
+                    outside, so here they are with their source.</p>
+                <div id="reference"></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Month by month</h2>
+            <p class="sub">Click any month to see which sites made it up, then a site to see its
+                days, then a day to see the exact spreadsheet cells.</p>
+            <div class="scroll"><table id="monthsTable"></table></div>
+        </div>
     </div>
 </section>
 
@@ -85,6 +89,17 @@
         </div>
         <div class="scroll"><table id="energyTable"></table></div>
     </div>
+
+    <div class="panel">
+        <h2>Where the energy comes from</h2>
+        <p class="sub" id="mapSub">Every province with sites, shaded by how much they generated.
+            Click one to see only that province.</p>
+        <div class="map-wrap">
+            <svg id="map" viewBox="0 0 1000 900" preserveAspectRatio="xMidYMid meet"></svg>
+            <div id="mapLegend"></div>
+        </div>
+        <div class="scroll"><table id="regionTable"></table></div>
+    </div>
 </section>
 
 <!-- ================= FLEET (5.4) ================= -->
@@ -99,37 +114,27 @@
     </div>
 </section>
 
-<!-- ================= DATA QUALITY (5.6) ================= -->
-<section class="screen" id="screen-quality">
-    <div class="grid kpi" id="qualityKpis"></div>
-    <div class="grid two">
-        <div class="panel">
-            <h2>Gaps</h2>
-            <p class="sub">Never interpolated. A missing day stays missing and stays visible.</p>
-            <div class="scroll scroll-y"><table id="gapsTable"></table></div>
+<!-- ================= ALL DATA (the Gold layer) ================= -->
+<section class="screen" id="screen-ledger">
+    <div class="panel">
+        <h2>All data</h2>
+        <p class="sub">The Gold layer exactly as the calculations see it — one row per site
+            per month, every column that goes into a credit. This is the table the numbers on
+            every other screen are drawn from.</p>
+        <div class="toolbar">
+            <button class="primary" id="downloadCsv">Download as spreadsheet</button>
+            <span class="toolbar-label" style="margin-left:auto">Site</span>
+            <select id="ledgerSite"><option value="">All sites</option></select>
         </div>
-        <div class="panel">
-            <h2>Suspect days</h2>
-            <p class="sub">Each with the rule that flagged it.</p>
-            <div class="scroll scroll-y"><table id="suspectsTable"></table></div>
-        </div>
+        <div class="scroll"><table id="ledgerTable"></table></div>
     </div>
     <div class="panel">
-        <h2>Reconciliation</h2>
-        <p class="sub">Every figure on this portal is produced by SQL views. This recomputes the
-            same figures a second time in Python — from the Bronze cells and from a fresh parse of
-            the stored original files, never from the views — and compares them. Two independent
-            implementations agreeing is the evidence that the transfer to Gold is faithful.</p>
-        <button class="primary" id="runRecon">Run reconciliation</button>
+        <h2>Check the numbers</h2>
+        <p class="sub">Recomputes every figure a second time in Python — from the spreadsheet
+            cells, never from the database views — and compares. Two independent results
+            agreeing is the evidence the table above is right.</p>
+        <button class="ghost" id="runRecon">Run the check</button>
         <div id="reconResult"></div>
-    </div>
-
-    <div class="panel">
-        <h2>Overlapping files</h2>
-        <p class="sub">Where a later upload covers dates an earlier one already did. Nothing is
-            deleted — the later file wins for those site-days and the earlier readings are kept
-            as superseded.</p>
-        <div class="scroll"><table id="overlapsTable"></table></div>
     </div>
 </section>
 

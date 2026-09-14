@@ -219,43 +219,16 @@ def check_generation_daily(verbose: bool) -> Check:
                 app=f"{sum(theirs.values()):,.4f} kWh", recomputed=f"{total_mine:,.4f} kWh")
 
 
-# --- 4. Nothing is created or destroyed between the layers ------------------
-
-def check_conservation(verbose: bool) -> Check:
-    c = Check("conservation", "Every kWh is either eligible or excluded, never both or neither")
-    rows = query(
-        "SELECT plant_name, reading_date, generation_kwh, eligible_kwh, excluded_kwh, "
-        "exclusion_reason FROM silver.eligibility"
-    )
-    if not rows:
-        return c.skip("nothing loaded")
-    offenders = []
-    gen = elig = excl = Decimal(0)
-    for r in rows:
-        g, e, x = D(r["generation_kwh"]), D(r["eligible_kwh"]), D(r["excluded_kwh"])
-        gen, elig, excl = gen + g, elig + e, excl + x
-        if abs(g - (e + x)) > TOL:
-            offenders.append(
-                f"{r['plant_name']} {r['reading_date']}: generation={g} "
-                f"eligible={e} excluded={x} reason={r['exclusion_reason']}"
-            )
-        if e > 0 and x > 0:
-            offenders.append(f"{r['plant_name']} {r['reading_date']}: counted in both streams")
-    if offenders:
-        return c.fail(f"{len(offenders)} site-day(s) do not balance",
-                      offenders=offenders[: (None if verbose else 8)])
-    return c.ok(f"{len(rows):,} site-days balance",
-                app=f"generation {gen:,.4f}", recomputed=f"eligible {elig:,.4f} + excluded {excl:,.4f}")
-
+# --- 4. Nothing is created or lost between the layers -----------------------
 
 def check_daily_totals_reach_bronze() -> Check:
-    """The eligible total must trace back to the sum of the winning Bronze cells."""
-    c = Check("eligible_traces_to_bronze", "Fleet totals trace back to the Bronze cells")
+    """The fleet total must equal the sum of the winning Bronze cells."""
+    c = Check("generation_traces_to_bronze", "Fleet generation traces back to the Bronze cells")
     mine = _winning_daily_kwh()
     if not mine:
         return c.skip("nothing loaded")
     recomputed = sum(mine.values())
-    row = query_one("SELECT COALESCE(SUM(generation_kwh),0) g FROM silver.eligibility")
+    row = query_one("SELECT COALESCE(SUM(generation_kwh),0) g FROM silver.site_month")
     view = D(row["g"])
     if abs(recomputed - view) > TOL:
         return c.fail("fleet generation does not match the sum of the winning Bronze cells",
@@ -264,29 +237,50 @@ def check_daily_totals_reach_bronze() -> Check:
                 app=f"{view:,.4f} kWh", recomputed=f"{recomputed:,.4f} kWh")
 
 
+def check_every_reading_counted(verbose: bool) -> Check:
+    """No site-day that has data may be dropped between Silver and Gold."""
+    c = Check("nothing_dropped", "Every site-day with data reaches the monthly totals")
+    daily = query_one(
+        "SELECT COUNT(*) n, COALESCE(SUM(generation_kwh),0) kwh FROM silver.generation_daily"
+    ) or {}
+    monthly = query_one(
+        "SELECT COALESCE(SUM(days_with_data),0) n, COALESCE(SUM(generation_kwh),0) kwh "
+        "FROM silver.site_month"
+    ) or {}
+    if not daily.get("n"):
+        return c.skip("nothing loaded")
+    if daily["n"] != monthly["n"] or abs(D(daily["kwh"]) - D(monthly["kwh"])) > TOL:
+        return c.fail("days or energy went missing between the daily and monthly views",
+                      app=f"{monthly['n']} days / {D(monthly['kwh']):,.4f} kWh",
+                      recomputed=f"{daily['n']} days / {D(daily['kwh']):,.4f} kWh")
+    return c.ok(f"{daily['n']:,} site-days carried through intact",
+                app=f"{D(monthly['kwh']):,.4f} kWh", recomputed=f"{D(daily['kwh']):,.4f} kWh")
+
+
 # --- 5. The monthly roll-up ------------------------------------------------
 
 def check_month_rollup(verbose: bool) -> Check:
     c = Check("month_rollup", "Monthly totals are the sum of their days")
-    daily = defaultdict(lambda: [Decimal(0), Decimal(0), Decimal(0)])
+    daily = defaultdict(lambda: [Decimal(0), 0])
     for r in query(
-        "SELECT plant_name, date_trunc('month', reading_date)::date AS month, "
-        "generation_kwh, eligible_kwh, excluded_kwh FROM silver.eligibility"
+        "SELECT plant_name, date_trunc('month', reading_date)::date AS month, generation_kwh "
+        "FROM silver.generation_daily"
     ):
         acc = daily[(r["plant_name"], r["month"])]
-        acc[0] += D(r["generation_kwh"]); acc[1] += D(r["eligible_kwh"]); acc[2] += D(r["excluded_kwh"])
+        acc[0] += D(r["generation_kwh"]); acc[1] += 1
     if not daily:
         return c.skip("nothing loaded")
 
     offenders = []
-    for r in query("SELECT plant_name, month, generation_kwh, eligible_kwh, excluded_kwh FROM silver.site_month"):
+    for r in query("SELECT plant_name, month, generation_kwh, days_with_data FROM silver.site_month"):
         acc = daily.get((r["plant_name"], r["month"]))
         if acc is None:
             offenders.append(f"{r['plant_name']} {r['month']}: month exists with no days")
             continue
-        for i, col in enumerate(("generation_kwh", "eligible_kwh", "excluded_kwh")):
-            if abs(acc[i] - D(r[col])) > TOL:
-                offenders.append(f"{r['plant_name']} {r['month']} {col}: days={acc[i]} month={D(r[col])}")
+        if abs(acc[0] - D(r["generation_kwh"])) > TOL:
+            offenders.append(f"{r['plant_name']} {r['month']}: days={acc[0]} month={D(r['generation_kwh'])}")
+        if acc[1] != r["days_with_data"]:
+            offenders.append(f"{r['plant_name']} {r['month']}: day count {acc[1]} vs {r['days_with_data']}")
     if offenders:
         return c.fail(f"{len(offenders)} disagreement(s)", offenders=offenders[: (None if verbose else 8)])
     return c.ok(f"{len(daily):,} site-months equal the sum of their days")
@@ -295,9 +289,9 @@ def check_month_rollup(verbose: bool) -> Check:
 # --- 6. Gold: carbon and the VCU ledger, recomputed -------------------------
 
 def check_carbon(verbose: bool) -> Check:
-    c = Check("carbon", "Emission reduction is eligible MWh times the factor on record")
+    c = Check("carbon", "Emission reduction is MWh generated times the factor on record")
     rows = query(
-        "SELECT plant_name, month, eligible_kwh, emission_factor, net_reduction_tco2e, "
+        "SELECT plant_name, month, generation_kwh, emission_factor, net_reduction_tco2e, "
         "project_emissions_tco2e, leakage_tco2e FROM gold.carbon"
     )
     if not rows:
@@ -307,7 +301,7 @@ def check_carbon(verbose: bool) -> Check:
         return c.skip(f"no emission factor applies to any of the {len(rows)} site-month(s)")
     offenders = []
     for r in priced:
-        expect = (D(r["eligible_kwh"]) / Decimal(1000)) * D(r["emission_factor"]) \
+        expect = (D(r["generation_kwh"]) / Decimal(1000)) * D(r["emission_factor"]) \
                  - D(r["project_emissions_tco2e"]) - D(r["leakage_tco2e"])
         got = D(r["net_reduction_tco2e"])
         if abs(expect - got) > TOL:
@@ -318,70 +312,24 @@ def check_carbon(verbose: bool) -> Check:
     return c.ok(f"{len(priced):,} site-months agree", app=f"{total:,.4f} tCO2e", recomputed=f"{total:,.4f} tCO2e")
 
 
-def check_vcu_ledger(verbose: bool) -> Check:
-    """Rebuild the whole-tonne carry-forward ledger from scratch."""
-    c = Check("vcu_ledger", "The VCU ledger issues whole tonnes and carries the remainder")
-    rows = query(
-        "SELECT plant_name, month, net_reduction_tco2e, vcu_issued, carry_forward_tco2e "
-        "FROM gold.vcu ORDER BY plant_name, month"
-    )
+def check_vcu_matches_tonnes(verbose: bool) -> Check:
+    """One tonne avoided is one unit — the two figures must be identical."""
+    c = Check("vcu_equals_tonnes", "VCUs equal the tonnes avoided, exactly")
+    rows = query("SELECT plant_name, month, net_reduction_tco2e, vcu_issued FROM gold.vcu")
     if not rows:
         return c.skip("nothing loaded")
-
-    by_site = defaultdict(list)
-    for r in rows:
-        by_site[r["plant_name"]].append(r)
-
-    offenders = []
-    total_issued = Decimal(0)
-    for plant, months in by_site.items():
-        cumulative = Decimal(0)
-        issued_so_far = Decimal(0)
-        for r in months:
-            cumulative += D(r["net_reduction_tco2e"])
-            cumulative_issued = Decimal(math.floor(cumulative))
-            expect_issued = cumulative_issued - issued_so_far
-            expect_carry = cumulative - cumulative_issued
-            issued_so_far = cumulative_issued
-            total_issued += expect_issued
-            if D(r["vcu_issued"]) != expect_issued:
-                offenders.append(f"{plant} {r['month']}: issued view={D(r['vcu_issued'])} recomputed={expect_issued}")
-            if abs(D(r["carry_forward_tco2e"]) - expect_carry) > TOL:
-                offenders.append(f"{plant} {r['month']}: carry view={D(r['carry_forward_tco2e'])} recomputed={expect_carry}")
+    offenders = [
+        f"{r['plant_name']} {r['month']}: tCO2e={D(r['net_reduction_tco2e'])} VCU={D(r['vcu_issued'])}"
+        for r in rows if D(r["net_reduction_tco2e"]) != D(r["vcu_issued"])
+    ]
     if offenders:
-        return c.fail(f"{len(offenders)} disagreement(s)", offenders=offenders[: (None if verbose else 8)])
-
-    view_issued = D((query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu") or {}).get("v"))
-    reduced = D((query_one("SELECT COALESCE(SUM(net_reduction_tco2e),0) t FROM gold.vcu") or {}).get("t"))
-    if view_issued > reduced:
-        return c.fail("more units issued than tonnes reduced",
-                      app=f"{view_issued} VCU", recomputed=f"{reduced} tCO2e")
-    return c.ok(f"{len(rows):,} site-months agree, and nothing is issued that was not reduced",
-                app=f"{view_issued} VCU", recomputed=f"{total_issued} VCU")
+        return c.fail(f"{len(offenders)} site-month(s) disagree", offenders=offenders[: (None if verbose else 8)])
+    total = sum((D(r["vcu_issued"]) for r in rows), Decimal(0))
+    return c.ok(f"{len(rows):,} site-months agree, with nothing rounded or carried forward",
+                app=f"{total:,.4f} VCU", recomputed=f"{total:,.4f} tCO2e")
 
 
 # --- 7. Completeness --------------------------------------------------------
-
-def check_site_day_grid() -> Check:
-    c = Check("site_day_grid", "Every site has a row for every day in the window")
-    w = query_one("SELECT window_start, window_end FROM silver.loaded_window")
-    if not w or not w["window_start"]:
-        return c.skip("no loaded window")
-    days = (w["window_end"] - w["window_start"]).days + 1
-    sites = (query_one("SELECT COUNT(*) n FROM bronze.site") or {}).get("n", 0)
-    actual = (query_one("SELECT COUNT(*) n FROM silver.eligibility") or {}).get("n", 0)
-    dupes = (query_one(
-        "SELECT COUNT(*) n FROM (SELECT plant_name, reading_date FROM silver.eligibility "
-        "GROUP BY 1,2 HAVING COUNT(*) > 1) t"
-    ) or {}).get("n", 0)
-    if dupes:
-        return c.fail(f"{dupes} site-day(s) appear more than once")
-    if actual != sites * days:
-        return c.fail("the site-day grid is not complete",
-                      app=f"{actual:,} rows", recomputed=f"{sites} sites x {days} days = {sites * days:,}")
-    return c.ok(f"{sites} sites x {days} days, each exactly once",
-                app=f"{actual:,} rows", recomputed=f"{sites * days:,} rows")
-
 
 def check_every_plant_has_a_site() -> Check:
     c = Check("sites_registered", "Every plant that has readings is in the fleet master")
@@ -401,7 +349,7 @@ def check_every_plant_has_a_site() -> Check:
 def check_factor_coverage() -> Check:
     c = Check("factor_coverage", "Every month with eligible energy has an applicable factor")
     rows = query(
-        "SELECT month, SUM(eligible_kwh) kwh, bool_or(emission_factor IS NOT NULL) has_factor "
+        "SELECT month, SUM(generation_kwh) kwh, bool_or(emission_factor IS NOT NULL) has_factor "
         "FROM gold.carbon GROUP BY month ORDER BY month"
     )
     if not rows:
@@ -420,7 +368,7 @@ def check_factor_coverage() -> Check:
         why = "no factor is marked active"
     kwh = sum((D(r["kwh"]) for r in uncovered), Decimal(0))
     return c.fail(
-        f"{len(uncovered)} month(s) carrying {kwh:,.0f} kWh of eligible energy have no "
+        f"{len(uncovered)} month(s) carrying {kwh:,.0f} kWh of generation have no "
         f"applicable emission factor, so no reduction and no VCUs are claimed — {why}",
         app="0 VCU", recomputed="not calculable",
         offenders=[f"{r['month']}: {D(r['kwh']):,.0f} kWh eligible, no factor" for r in uncovered[:8]],
@@ -434,38 +382,32 @@ def check_headline() -> Check:
     s = query_one("SELECT * FROM gold.fleet_summary")
     if not s:
         return c.skip("nothing loaded")
-    parts = query_one(
-        "SELECT COALESCE(SUM(generation_kwh),0) g, COALESCE(SUM(eligible_kwh),0) e, "
-        "COALESCE(SUM(excluded_kwh),0) x FROM silver.eligibility"
-    )
+    parts = query_one("SELECT COALESCE(SUM(generation_kwh),0) g FROM silver.site_month")
     vcu = query_one("SELECT COALESCE(SUM(vcu_issued),0) v FROM gold.vcu")
     bad = []
     for label, a, b in (
         ("generation", D(s["generation_kwh"]), D(parts["g"])),
-        ("eligible", D(s["eligible_kwh"]), D(parts["e"])),
-        ("excluded", D(s["excluded_kwh"]), D(parts["x"])),
         ("vcu", D(s["vcu_issued"]), D(vcu["v"])),
     ):
         if abs(a - b) > TOL:
             bad.append(f"{label}: headline={a} parts={b}")
     if bad:
         return c.fail("the headline does not equal its parts", offenders=bad)
-    return c.ok("generation, eligible, excluded and VCUs all tie out",
+    return c.ok("generation and VCUs tie out",
                 app=f"{D(s['generation_kwh']):,.2f} kWh generated",
-                recomputed=f"{D(parts['e']):,.2f} eligible + {D(parts['x']):,.2f} excluded")
+                recomputed=f"{D(s['vcu_issued']):,.4f} VCU")
 
 
 CHECKS = [
     ("files_intact", lambda v: check_files_intact()),
     ("reparse", check_reparse_matches_bronze),
     ("generation_daily", check_generation_daily),
-    ("eligible_traces", lambda v: check_daily_totals_reach_bronze()),
-    ("conservation", check_conservation),
-    ("site_day_grid", lambda v: check_site_day_grid()),
+    ("generation_traces", lambda v: check_daily_totals_reach_bronze()),
+    ("nothing_dropped", check_every_reading_counted),
     ("sites_registered", lambda v: check_every_plant_has_a_site()),
     ("month_rollup", check_month_rollup),
     ("carbon", check_carbon),
-    ("vcu_ledger", check_vcu_ledger),
+    ("vcu_equals_tonnes", check_vcu_matches_tonnes),
     ("factor_coverage", lambda v: check_factor_coverage()),
     ("headline", lambda v: check_headline()),
 ]
