@@ -112,16 +112,19 @@ def drill_months() -> list[dict]:
         SELECT f.month,
                f.generation_kwh, f.eligible_kwh, f.excluded_kwh,
                f.site_count, f.days_missing, f.days_suspect, f.worst_flag,
-               COALESCE(i.irec_issued, 0)          AS irec_issued,
-               COALESCE(c.net_reduction_tco2e, 0)  AS net_reduction_tco2e,
-               COALESCE(r.total_revenue, 0)        AS total_revenue
+               COALESCE(g.irec_issued, 0)          AS irec_issued,
+               COALESCE(g.net_reduction_tco2e, 0)  AS net_reduction_tco2e,
+               COALESCE(g.total_revenue, 0)        AS total_revenue
         FROM silver.fleet_month f
-        LEFT JOIN (SELECT month, SUM(irec_issued) AS irec_issued FROM gold.irec GROUP BY month) i
-               ON i.month = f.month
-        LEFT JOIN (SELECT month, SUM(net_reduction_tco2e) AS net_reduction_tco2e FROM gold.carbon GROUP BY month) c
-               ON c.month = f.month
-        LEFT JOIN (SELECT month, SUM(total_revenue) AS total_revenue FROM gold.revenue GROUP BY month) r
-               ON r.month = f.month
+        -- gold.revenue already carries the credits and the carbon, so this is
+        -- one pass over the chain rather than three.
+        LEFT JOIN (
+            SELECT month,
+                   SUM(irec_issued)         AS irec_issued,
+                   SUM(net_reduction_tco2e) AS net_reduction_tco2e,
+                   SUM(total_revenue)       AS total_revenue
+            FROM gold.revenue GROUP BY month
+        ) g ON g.month = f.month
         ORDER BY f.month
         """
     )
@@ -134,13 +137,13 @@ def drill_sites(month: dt.date) -> list[dict]:
         SELECT sm.plant_name, sm.generation_kwh, sm.eligible_kwh, sm.excluded_kwh,
                sm.days_expected, sm.days_with_data, sm.days_missing,
                sm.days_suspect, sm.worst_flag,
-               COALESCE(i.irec_issued, 0)         AS irec_issued,
-               COALESCE(c.net_reduction_tco2e, 0) AS net_reduction_tco2e,
+               COALESCE(g.irec_issued, 0)         AS irec_issued,
+               COALESCE(g.net_reduction_tco2e, 0) AS net_reduction_tco2e,
                s.installed_kwp
         FROM silver.site_month sm
         JOIN bronze.site s ON s.plant_name = sm.plant_name
-        LEFT JOIN gold.irec   i ON i.plant_name = sm.plant_name AND i.month = sm.month
-        LEFT JOIN gold.carbon c ON c.plant_name = sm.plant_name AND c.month = sm.month
+        LEFT JOIN gold.revenue g
+               ON g.plant_name = sm.plant_name AND g.month = sm.month
         WHERE sm.month = %s
         ORDER BY sm.eligible_kwh DESC
         """,

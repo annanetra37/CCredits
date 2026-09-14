@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS gold.price (
 -- forward rather than rounded away. The ledger is the running total: each
 -- month issues the difference between this month's floor and last month's.
 CREATE OR REPLACE VIEW gold.irec AS
-WITH running AS (
+WITH sm AS (SELECT * FROM silver.site_month),
+running AS (
     SELECT plant_name,
            month,
            eligible_kwh,
@@ -50,7 +51,7 @@ WITH running AS (
                PARTITION BY plant_name ORDER BY month
                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
            ) AS cumulative_eligible_kwh
-    FROM silver.site_month
+    FROM sm
 ), ledger AS (
     SELECT plant_name,
            month,
@@ -81,6 +82,27 @@ FROM ledger;
 -- 4.2 Eligible MWh x the emission factor, joined on date so the factor's
 -- version travels with the result instead of being baked into it.
 -- Project emissions and leakage are explicit zeros so the formula reads complete.
+--
+-- The factor is resolved once per distinct month rather than once per site-month
+-- row: as a correlated lookup this view cost hundreds of milliseconds on a few
+-- dozen rows, and everything above it paid that cost again.
+CREATE OR REPLACE VIEW gold.factor_by_month AS
+SELECT DISTINCT ON (m.month)
+       m.month,
+       e.factor_id,
+       e.value_tco2e_per_mwh,
+       e.factor_type,
+       e.source,
+       e.source_url,
+       e.vintage,
+       e.valid_from,
+       COALESCE(e.verified, false) AS verified
+FROM (SELECT DISTINCT month FROM silver.site_month) m
+LEFT JOIN gold.emission_factor e
+       ON e.valid_from <= (m.month + interval '1 month - 1 day')::date
+      AND (e.valid_to IS NULL OR e.valid_to >= m.month)
+ORDER BY m.month, e.valid_from DESC;
+
 CREATE OR REPLACE VIEW gold.carbon AS
 SELECT sm.plant_name,
        sm.month,
@@ -101,59 +123,81 @@ SELECT sm.plant_name,
        (sm.eligible_kwh / 1000.0) * ef.value_tco2e_per_mwh
            - 0::numeric - 0::numeric                              AS net_reduction_tco2e
 FROM silver.site_month sm
-LEFT JOIN LATERAL (
-    SELECT *
-    FROM gold.emission_factor e
-    WHERE e.valid_from <= (sm.month + interval '1 month - 1 day')::date
-      AND (e.valid_to IS NULL OR e.valid_to >= sm.month)
-    ORDER BY e.valid_from DESC
-    LIMIT 1
-) ef ON true;
+LEFT JOIN gold.factor_by_month ef ON ef.month = sm.month;
 
--- 4.3 Credits x price.
+-- 4.3 Credits x price. Prices resolve per distinct month, for the same reason.
+CREATE OR REPLACE VIEW gold.price_by_month AS
+SELECT m.month,
+       ip.value    AS irec_price_per_mwh,
+       ip.currency AS currency,
+       ip.as_of    AS irec_price_as_of,
+       vp.value    AS vcu_price_per_tco2e,
+       vp.as_of    AS vcu_price_as_of
+FROM (SELECT DISTINCT month FROM silver.site_month) m
+LEFT JOIN LATERAL (
+    SELECT * FROM gold.price p
+    WHERE p.instrument = 'irec' AND p.as_of <= (m.month + interval '1 month - 1 day')::date
+    ORDER BY p.as_of DESC LIMIT 1
+) ip ON true
+LEFT JOIN LATERAL (
+    SELECT * FROM gold.price p
+    WHERE p.instrument = 'vcu' AND p.as_of <= (m.month + interval '1 month - 1 day')::date
+    ORDER BY p.as_of DESC LIMIT 1
+) vp ON true;
+
 CREATE OR REPLACE VIEW gold.revenue AS
 SELECT i.plant_name,
        i.month,
        i.irec_issued,
        c.net_reduction_tco2e,
-       ip.value        AS irec_price_per_mwh,
-       ip.currency     AS currency,
-       ip.as_of        AS irec_price_as_of,
-       vp.value        AS vcu_price_per_tco2e,
-       vp.as_of        AS vcu_price_as_of,
-       i.irec_issued * COALESCE(ip.value, 0)                AS irec_revenue,
-       c.net_reduction_tco2e * COALESCE(vp.value, 0)        AS vcu_revenue,
-       i.irec_issued * COALESCE(ip.value, 0)
-           + c.net_reduction_tco2e * COALESCE(vp.value, 0)  AS total_revenue
+       p.irec_price_per_mwh,
+       p.currency,
+       p.irec_price_as_of,
+       p.vcu_price_per_tco2e,
+       p.vcu_price_as_of,
+       i.irec_issued * COALESCE(p.irec_price_per_mwh, 0)                AS irec_revenue,
+       c.net_reduction_tco2e * COALESCE(p.vcu_price_per_tco2e, 0)       AS vcu_revenue,
+       i.irec_issued * COALESCE(p.irec_price_per_mwh, 0)
+           + COALESCE(c.net_reduction_tco2e, 0) * COALESCE(p.vcu_price_per_tco2e, 0) AS total_revenue
 FROM gold.irec i
 JOIN gold.carbon c ON c.plant_name = i.plant_name AND c.month = i.month
-LEFT JOIN LATERAL (
-    SELECT * FROM gold.price p
-    WHERE p.instrument = 'irec' AND p.as_of <= (i.month + interval '1 month - 1 day')::date
-    ORDER BY p.as_of DESC LIMIT 1
-) ip ON true
-LEFT JOIN LATERAL (
-    SELECT * FROM gold.price p
-    WHERE p.instrument = 'vcu' AND p.as_of <= (i.month + interval '1 month - 1 day')::date
-    ORDER BY p.as_of DESC LIMIT 1
-) vp ON true;
+LEFT JOIN gold.price_by_month p ON p.month = i.month;
 
 -- Fleet headline: one row, the numbers on the front screen.
+-- The CTEs are MATERIALIZED deliberately: written as independent scalar
+-- subqueries, each one re-walked Bronze through the whole view stack, and the
+-- single most-looked-at query in the app took seconds rather than milliseconds.
 CREATE OR REPLACE VIEW gold.fleet_summary AS
-SELECT (SELECT COUNT(*) FROM bronze.site)                               AS site_count,
-       (SELECT COUNT(*) FROM bronze.source_file)                        AS file_count,
-       (SELECT window_start FROM silver.loaded_window)                  AS window_start,
-       (SELECT window_end   FROM silver.loaded_window)                  AS window_end,
-       COALESCE((SELECT SUM(generation_kwh) FROM silver.eligibility), 0) AS generation_kwh,
-       COALESCE((SELECT SUM(eligible_kwh)   FROM silver.eligibility), 0) AS eligible_kwh,
-       COALESCE((SELECT SUM(excluded_kwh)   FROM silver.eligibility), 0) AS excluded_kwh,
-       COALESCE((SELECT SUM(irec_issued)    FROM gold.irec), 0)          AS irec_issued,
-       COALESCE((SELECT SUM(carry_forward_mwh) FROM (
-            SELECT DISTINCT ON (plant_name) plant_name, carry_forward_mwh
-            FROM gold.irec ORDER BY plant_name, month DESC) last_month), 0) AS carry_forward_mwh,
-       COALESCE((SELECT SUM(net_reduction_tco2e) FROM gold.carbon), 0)   AS net_reduction_tco2e,
-       COALESCE((SELECT SUM(total_revenue) FROM gold.revenue), 0)        AS total_revenue,
-       COALESCE((SELECT currency FROM gold.revenue WHERE currency IS NOT NULL LIMIT 1), 'USD') AS currency;
+WITH energy AS (
+    SELECT COALESCE(SUM(generation_kwh), 0) AS generation_kwh,
+           COALESCE(SUM(eligible_kwh), 0)   AS eligible_kwh,
+           COALESCE(SUM(excluded_kwh), 0)   AS excluded_kwh
+    FROM silver.site_month
+), ledger AS (
+    SELECT plant_name, month, irec_issued, carry_forward_mwh,
+           ROW_NUMBER() OVER (PARTITION BY plant_name ORDER BY month DESC) AS recency
+    FROM gold.irec
+), money AS (
+    SELECT COALESCE(SUM(net_reduction_tco2e), 0) AS net_reduction_tco2e,
+           COALESCE(SUM(total_revenue), 0)       AS total_revenue,
+           MAX(currency)                         AS currency
+    FROM gold.revenue
+)
+SELECT (SELECT COUNT(*) FROM bronze.site)              AS site_count,
+       (SELECT COUNT(*) FROM bronze.source_file)       AS file_count,
+       w.window_start,
+       w.window_end,
+       e.generation_kwh,
+       e.eligible_kwh,
+       e.excluded_kwh,
+       COALESCE((SELECT SUM(irec_issued) FROM ledger), 0)                        AS irec_issued,
+       COALESCE((SELECT SUM(carry_forward_mwh) FROM ledger WHERE recency = 1), 0) AS carry_forward_mwh,
+       m.net_reduction_tco2e,
+       m.total_revenue,
+       COALESCE(m.currency, 'USD')                     AS currency
+FROM energy e
+CROSS JOIN money m
+CROSS JOIN silver.loaded_window w;
 
 -- 5.4 The fleet table.
 CREATE OR REPLACE VIEW gold.fleet_table AS
@@ -175,8 +219,8 @@ SELECT s.plant_name,
        CASE WHEN COALESCE(agg.days_expected, 0) > 0
             THEN 100.0 * agg.days_ok / agg.days_expected
             ELSE 0 END                                       AS quality_score,
-       COALESCE(irec.irec_issued, 0)                         AS irec_issued,
-       COALESCE(carbon.net_reduction_tco2e, 0)               AS net_reduction_tco2e
+       COALESCE(credits.irec_issued, 0)                      AS irec_issued,
+       COALESCE(credits.net_reduction_tco2e, 0)              AS net_reduction_tco2e
 FROM bronze.site s
 LEFT JOIN (
     SELECT plant_name,
@@ -189,10 +233,12 @@ LEFT JOIN (
            SUM(eligible_kwh)   AS eligible_kwh
     FROM silver.site_month GROUP BY plant_name
 ) agg ON agg.plant_name = s.plant_name
-LEFT JOIN (SELECT plant_name, SUM(irec_issued) AS irec_issued FROM gold.irec GROUP BY plant_name) irec
-       ON irec.plant_name = s.plant_name
-LEFT JOIN (SELECT plant_name, SUM(net_reduction_tco2e) AS net_reduction_tco2e FROM gold.carbon GROUP BY plant_name) carbon
-       ON carbon.plant_name = s.plant_name;
+LEFT JOIN (
+    SELECT plant_name,
+           SUM(irec_issued)          AS irec_issued,
+           SUM(net_reduction_tco2e)  AS net_reduction_tco2e
+    FROM gold.revenue GROUP BY plant_name
+) credits ON credits.plant_name = s.plant_name;
 
 -- 4.4 Lineage. Any gold figure resolves to the bronze cells underneath it:
 -- gold row -> silver site-days -> bronze readings -> file, hash, row, column.

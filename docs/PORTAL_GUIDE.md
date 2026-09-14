@@ -82,21 +82,22 @@ revenue, coverage. Click any of them to open the drill-down.
 
 ### The river
 
-The wide bar on the left is every kWh read from your files. It splits into the
-green **Eligible** stream and one grey stream per exclusion reason:
+The neutral bar on the left is every kWh read from your files. It splits into
+the green **Eligible** stream and one coloured stream per exclusion reason,
+each directly labelled:
 
-| Grey stream | What it means |
-|---|---|
-| **Quality suspect** | The day broke a quality rule — zero, implausible, or two files disagreeing |
-| **Data gap** | No row existed for that site on that day |
-| **Before grid connection** | The site was not yet connected |
-| **Site inactive** | The site's status is not a running one |
+| Stream | Colour | What it means |
+|---|---|---|
+| **Quality suspect** | gold | The day broke a quality rule — zero, implausible, or two files disagreeing |
+| **Data gap** | red | No row existed for that site on that day |
+| **Before grid connection** | violet | The site was not yet connected |
+| **Site inactive** | blue | The site's status is not a running one |
 
 The green stream flows on to the credit box. Click any band to see the days
 behind it.
 
 The point of the river is that nothing disappears between generation and
-credits. Eligible plus all the grey streams equals generated, exactly.
+credits. Eligible plus all the exclusion streams equals generated, exactly.
 
 ### The calculation panel
 
@@ -215,7 +216,7 @@ average. One missing day makes the month "missing".
 
 1. **Upload** — drop all the exports at once, and read the parse summary out
    loud. That is the moment it stops looking like a mock-up.
-2. **Overview** — the river. Point at a grey stream and say why that energy does
+2. **Overview** — the river. Point at an exclusion stream and say why that energy does
    not count.
 3. **Drill** — click the credit number down to a cell reference and a SHA-256.
    That is the whole product in one gesture.

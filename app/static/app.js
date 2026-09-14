@@ -15,12 +15,40 @@ const monthName = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US
 const dayName = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' });
 const pill = (flag) => `<span class="pill ${esc(flag)}">${esc(flag)}</span>`;
 
+const busy = (id, cols) => {
+    const node = el(id);
+    node.innerHTML = node.tagName === 'TABLE'
+        ? `<tbody><tr><td colspan="${cols || 8}" class="loading">Loading…</td></tr></tbody>`
+        : `<div class="loading">Loading…</div>`;
+};
+const failed = (id, err, cols) => {
+    const node = el(id);
+    const msg = `Could not load this: ${esc(err.message)}`;
+    node.innerHTML = node.tagName === 'TABLE'
+        ? `<tbody><tr><td colspan="${cols || 8}" class="err" style="padding:22px;text-align:center">${msg}</td></tr></tbody>`
+        : `<div class="err" style="padding:22px;text-align:center">${msg}</div>`;
+};
+
 const REASON_LABEL = {
     quality_suspect: 'Quality suspect',
     data_gap: 'Data gap',
     before_grid_connection: 'Before grid connection',
     site_inactive: 'Site inactive',
 };
+
+// The encoding colours live in the stylesheet as validated tokens; read them
+// rather than restating them, so the palette has exactly one definition.
+const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const REASON_COLOR = {
+    quality_suspect: '--suspect',
+    data_gap: '--gap',
+    before_grid_connection: '--pregrid',
+    site_inactive: '--inactive',
+};
+// Decorative washes for the stat tiles. These carry no meaning — every tile is
+// titled — so they are free to be soft and colourful.
+const TILE_TINTS = ['--accent-wash', '--eligible-wash', '--violet-wash',
+                    '--gold-wash', '--rose-wash', '--eligible-wash'];
 
 let CONTEXT = null;
 
@@ -53,7 +81,8 @@ function drawRiver(d) {
     })).filter((e) => e.kwh > 0);
 
     if (generation <= 0) {
-        svg.innerHTML = `<text x="500" y="170" text-anchor="middle" class="flow-sub">No data loaded yet — upload a Sungrow export to fill this in.</text>`;
+        svg.innerHTML = `<text x="500" y="170" text-anchor="middle" class="flow-sub">`
+            + `No data loaded yet — upload a Sungrow export to fill this in.</text>`;
         return;
     }
 
@@ -66,10 +95,17 @@ function drawRiver(d) {
     const parts = [];
 
     // Left node: everything generated.
+    const cEligible = token('--eligible');
+    parts.push(`<defs>
+        <linearGradient id="genGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#6f6e69"/>
+            <stop offset="100%" stop-color="#4a4946"/>
+        </linearGradient>
+    </defs>`);
     parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x0}" y="${top}" width="44" height="${usable}" rx="3" fill="#2b4a63"/>
-        <text x="${x0 - 10}" y="${top + usable / 2 - 6}" text-anchor="end" class="flow-label">Generated</text>
-        <text x="${x0 - 10}" y="${top + usable / 2 + 10}" text-anchor="end" class="flow-sub">${fmt(generation)} kWh</text>
+        <rect x="${x0}" y="${top}" width="44" height="${usable}" rx="5" fill="url(#genGrad)"/>
+        <text x="${x0 - 12}" y="${top + usable / 2 - 6}" text-anchor="end" class="flow-label">Generated</text>
+        <text x="${x0 - 12}" y="${top + usable / 2 + 11}" text-anchor="end" class="flow-sub">${fmt(generation)} kWh</text>
     </g>`);
 
     // Ribbons: eligible first (green), then each exclusion reason in grey.
@@ -83,11 +119,11 @@ function drawRiver(d) {
     let cursorRight = top;
     const eligibleH = Math.max(eligible * scale, MIN_BAND);
 
-    parts.push(ribbon(cursorLeft, cursorRight, eligibleH, '#3fb950', 0.28));
+    parts.push(ribbon(cursorLeft, cursorRight, eligibleH, cEligible, 0.30));
     parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x2}" y="${cursorRight}" width="42" height="${eligibleH}" rx="3" fill="#3fb950"/>
-        <text x="${x2 + 50}" y="${cursorRight + eligibleH / 2 - 5}" class="flow-label">Eligible</text>
-        <text x="${x2 + 50}" y="${cursorRight + eligibleH / 2 + 11}" class="flow-sub">${fmt(eligible)} kWh</text>
+        <rect x="${x2}" y="${cursorRight}" width="42" height="${eligibleH}" rx="5" fill="${cEligible}"/>
+        <text x="${x2 + 52}" y="${cursorRight + eligibleH / 2 - 5}" class="flow-label">Eligible</text>
+        <text x="${x2 + 52}" y="${cursorRight + eligibleH / 2 + 11}" class="flow-sub">${fmt(eligible)} kWh</text>
     </g>`);
     const eligibleMid = cursorRight + eligibleH / 2;
     cursorLeft += eligibleH;
@@ -95,28 +131,32 @@ function drawRiver(d) {
 
     exclusions.forEach((e) => {
         const h = Math.max(e.kwh * scale, MIN_BAND);
-        parts.push(ribbon(cursorLeft, cursorRight, h, '#6b7a8d', 0.30));
+        const c = token(REASON_COLOR[e.reason] || '--ink-3');
+        parts.push(ribbon(cursorLeft, cursorRight, h, c, 0.30));
         parts.push(`<g class="flow-node" data-reason="${esc(e.reason)}">
-            <rect x="${x2}" y="${cursorRight}" width="42" height="${h}" rx="3" fill="#55616f"/>
-            <text x="${x2 + 50}" y="${cursorRight + h / 2 - 5}" class="flow-label">${esc(REASON_LABEL[e.reason] || e.reason)}</text>
-            <text x="${x2 + 50}" y="${cursorRight + h / 2 + 11}" class="flow-sub">${fmt(e.kwh)} kWh · ${fmt(e.days)} site-days</text>
+            <rect x="${x2}" y="${cursorRight}" width="42" height="${h}" rx="5" fill="${c}"/>
+            <text x="${x2 + 52}" y="${cursorRight + h / 2 - 5}" class="flow-label">${esc(REASON_LABEL[e.reason] || e.reason)}</text>
+            <text x="${x2 + 52}" y="${cursorRight + h / 2 + 11}" class="flow-sub">${fmt(e.kwh)} kWh · ${fmt(e.days)} site-days</text>
         </g>`);
         cursorLeft += h;
         cursorRight += h + GAP;
     });
 
     // Eligible energy continues on to the credits.
-    parts.push(`<path d="M${x2 + 42},${eligibleMid - eligibleH / 2} L${x3 - 8},${eligibleMid - 26}
-                 L${x3 - 8},${eligibleMid + 26} L${x2 + 42},${eligibleMid + eligibleH / 2} Z"
-                 fill="#3fb950" opacity="0.18"/>`);
+    parts.push(`<path d="M${x2 + 42},${eligibleMid - eligibleH / 2} L${x3 - 8},${eligibleMid - 28}
+                 L${x3 - 8},${eligibleMid + 28} L${x2 + 42},${eligibleMid + eligibleH / 2} Z"
+                 fill="${cEligible}" opacity="0.20"/>`);
     parts.push(`<g class="flow-node" data-drill="months">
-        <rect x="${x3 - 8}" y="${eligibleMid - 26}" width="118" height="52" rx="6" fill="#16351c" stroke="#3fb950"/>
-        <text x="${x3 + 51}" y="${eligibleMid - 6}" text-anchor="middle" class="flow-label" style="font-weight:700">${fmt(d.irec_issued)} I-REC</text>
-        <text x="${x3 + 51}" y="${eligibleMid + 12}" text-anchor="middle" class="flow-sub">${fmt(d.net_reduction_tco2e, 1)} tCO₂e</text>
+        <rect x="${x3 - 8}" y="${eligibleMid - 28}" width="126" height="56" rx="10"
+              fill="${token('--eligible-wash')}" stroke="${cEligible}" stroke-width="1.5"/>
+        <text x="${x3 + 55}" y="${eligibleMid - 5}" text-anchor="middle" class="flow-label"
+              style="font-weight:700;font-size:14px">${fmt(d.irec_issued)} I-REC</text>
+        <text x="${x3 + 55}" y="${eligibleMid + 13}" text-anchor="middle" class="flow-sub">${fmt(d.net_reduction_tco2e, 1)} tCO₂e</text>
     </g>`);
 
-    parts.push(`<text x="${x0}" y="${top - 14}" class="flow-sub">All energy read from the files</text>`);
-    parts.push(`<text x="${x2}" y="${top - 14}" class="flow-sub">Split by rule</text>`);
+    parts.push(`<text x="${x0}" y="${top - 15}" class="flow-cap">All energy read from the files</text>`);
+    parts.push(`<text x="${x2}" y="${top - 15}" class="flow-cap">Split by rule</text>`);
+    parts.push(`<text x="${x3 - 8}" y="${top - 15}" class="flow-cap">Credits</text>`);
 
     svg.innerHTML = parts.join('');
     svg.querySelectorAll('[data-drill="months"]').forEach((g) => { g.onclick = () => openMonths(); });
@@ -126,6 +166,9 @@ function drawRiver(d) {
 /* ------------------------------------------------------------- overview */
 
 async function loadOverview() {
+    // Not 'reference' or 'assumptions': those are filled from /api/context by
+    // renderContext(), and blanking them here would leave them blank for good.
+    busy('kpis'); busy('monthsTable', 8); busy('calc');
     const [summary, river, calc, months] = await Promise.all([
         api('/api/summary'), api('/api/river'), api('/api/calculation'), api('/api/drill/months'),
     ]);
@@ -138,8 +181,9 @@ async function loadOverview() {
         ['Carbon reduction', fmt(summary.net_reduction_tco2e, 2), 'tCO₂e', 'Eligible MWh × emission factor'],
         ['Indicative revenue', `${cur} ${fmt(summary.total_revenue, 0)}`, '', 'At the reference prices below'],
         ['Coverage', fmt(summary.coverage_pct, 1), '%', `${fmt(summary.days_missing)} of ${fmt(summary.site_days)} site-days missing`],
-    ].map(([label, value, unit, foot]) => `
-        <div class="kpi-card clickable" data-open="months">
+    ].map(([label, value, unit, foot], i) => `
+        <div class="kpi-card clickable" data-open="months"
+             style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
             <div class="label">${label}</div>
             <div class="value">${value}<span class="unit">${unit}</span></div>
             <div class="foot">${foot}</div>
@@ -229,8 +273,11 @@ function renderContext() {
 let fleetRows = [], fleetSort = { key: 'plant_name', dir: 1 };
 
 async function loadFleet() {
-    fleetRows = await api('/api/fleet');
-    renderFleet();
+    busy('fleetTable', 10);
+    try {
+        fleetRows = await api('/api/fleet');
+        renderFleet();
+    } catch (err) { failed('fleetTable', err, 10); }
 }
 
 function renderFleet() {
@@ -288,7 +335,15 @@ function renderFleet() {
 /* ------------------------------------------------- 5.6 Data quality */
 
 async function loadQuality() {
-    const q = await api('/api/quality');
+    busy('qualityKpis'); busy('gapsTable', 4); busy('suspectsTable', 4); busy('overlapsTable', 4);
+    let q;
+    try {
+        q = await api('/api/quality');
+    } catch (err) {
+        ['qualityKpis', 'gapsTable', 'suspectsTable', 'overlapsTable']
+            .forEach((id) => failed(id, err, 4));
+        return;
+    }
     const total = num(q.site_days) || 1;
     el('qualityKpis').innerHTML = `
         <div class="kpi-card"><div class="label">Coverage</div>
@@ -558,7 +613,10 @@ function renderResults(results) {
 }
 
 async function loadFiles() {
-    const files = await api('/api/files');
+    busy('filesTable', 9);
+    let files;
+    try { files = await api('/api/files'); }
+    catch (err) { return failed('filesTable', err, 9); }
     el('filesTable').innerHTML = `
         <thead><tr><th>#</th><th>File</th><th>Grain</th><th>Period</th>
             <th class="num">Rows</th><th class="num">Kept</th><th class="num">Blank</th>
