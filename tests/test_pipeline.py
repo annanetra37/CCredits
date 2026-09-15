@@ -431,7 +431,9 @@ def test_a_visit_is_recorded_without_storing_the_address():
         url = FakeURL()
         cookies: dict = {}
         query_params = {"from": "investor-acme"}
-        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1",
+        # A routable address, so the country lookup has something real to
+        # resolve; 203.0.113.x is a documentation range with no country.
+        headers = {"x-forwarded-for": "8.8.8.8, 10.0.0.1",
                    "user-agent": "Mozilla/5.0 (Macintosh) Chrome/120"}
         client = None
 
@@ -445,10 +447,15 @@ def test_a_visit_is_recorded_without_storing_the_address():
     response = FakeResponse()
     visits.record(FakeRequest(), response)
 
-    row = query_one("SELECT visitor_id, tag, ip_hash, user_agent FROM ops.visit")
+    row = query_one(
+        "SELECT visitor_id, tag, ip_hash, user_agent, country, country_code FROM ops.visit"
+    )
     assert row["tag"] == "investor-acme"
+    # The location is resolved from the address and kept; the address is not.
+    assert row["country_code"] == "US"
+    assert row["country"] == "United States"
     # The address is hashed, never stored, and not recoverable from the row.
-    assert row["ip_hash"] and "203.0.113.7" not in row["ip_hash"]
+    assert row["ip_hash"] and "8.8.8.8" not in row["ip_hash"]
     assert len(row["ip_hash"]) == 32
     # A cookie was issued so the same person is recognised next time.
     assert response.cookies[visits.COOKIE] == row["visitor_id"]
@@ -496,3 +503,43 @@ def test_tracking_can_be_switched_off_entirely():
     finally:
         cfg.track_visits = original
     assert query_one("SELECT COUNT(*) n FROM ops.visit")["n"] == 0
+
+
+def test_location_is_resolved_without_the_address_leaving_the_box():
+    """The country database is consulted in process, so a visit never causes an
+    outbound request, and only the answer is kept."""
+    from app import visits
+
+    code, name = visits._country("212.34.248.9")      # an Armenian address
+    assert (code, name) == ("AM", "Armenia")
+
+    # Private and loopback ranges are not a location and must not be shown as one.
+    for address in ("127.0.0.1", "10.0.0.5", "192.168.1.20", None, ""):
+        assert visits._country(address) == (None, None)
+
+
+def test_a_country_header_from_a_cdn_wins_over_the_lookup():
+    """Behind Cloudflare the edge knows the country better than a lookup does."""
+    from app import visits
+    from app.db import execute
+
+    execute("DELETE FROM ops.visit")
+
+    class FakeURL:
+        path, scheme = "/", "https"
+
+    class FakeRequest:
+        url = FakeURL()
+        cookies: dict = {}
+        query_params: dict = {}
+        headers = {"x-forwarded-for": "8.8.8.8", "cf-ipcountry": "AM"}
+        client = None
+
+    class FakeResponse:
+        def set_cookie(self, *a, **kw):
+            pass
+
+    visits.record(FakeRequest(), FakeResponse())
+    row = query_one("SELECT country_code, country FROM ops.visit")
+    assert row["country_code"] == "AM"          # the header, not the 8.8.8.8 lookup
+    assert row["country"] == "United States"    # name from the lookup is kept

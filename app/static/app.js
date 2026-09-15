@@ -662,6 +662,22 @@ el('downloadCsv').onclick = () => {
 
 /* --------------------------------------------- Who has opened the portal */
 
+// Two regional-indicator letters render as that country's flag, so no image
+// file or third-party asset is needed.
+const flag = (code) => (code && /^[A-Z]{2}$/.test(code))
+    ? String.fromCodePoint(...[...code].map((c) => 0x1F1E6 + c.charCodeAt(0) - 65)) + ' '
+    : '';
+
+// When a CDN supplies only a country code and no address reached the offline
+// lookup, the stored "name" is the code. The browser can name it itself.
+let REGION_NAMES = null;
+try { REGION_NAMES = new Intl.DisplayNames(['en'], { type: 'region' }); } catch { /* older browser */ }
+const countryName = (name, code) => {
+    if (name && !/^[A-Z]{2}$/.test(name)) return name;
+    const key = code || name;
+    try { return (REGION_NAMES && REGION_NAMES.of(key)) || key; } catch { return key; }
+};
+
 const shortUA = (ua) => {
     if (!ua) return '';
     const os = /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android'
@@ -701,6 +717,12 @@ async function loadVisitors() {
             <div class="foot">${esc(foot)}</div>
         </div>`).join('');
 
+    const locs = (d.locations || []).filter((l) => l.country !== 'Unknown');
+    el('locationLine').innerHTML = locs.length
+        ? 'Opened from ' + locs.map((l) =>
+            `<strong>${esc(flag(l.country_code) + countryName(l.country, l.country_code))}</strong> (${fmt(l.people)})`).join(', ')
+        : '';
+
     el('linksTable').innerHTML = (d.links || []).length ? `
         <thead><tr><th>Shared link</th><th class="num">People</th><th class="num">Opens</th>
             <th>First opened</th><th>Last opened</th></tr></thead>
@@ -714,16 +736,17 @@ async function loadVisitors() {
             <span class="mono">?from=their-name</span> and it will appear here.</td></tr></tbody>`;
 
     el('visitorsTable').innerHTML = `
-        <thead><tr><th>Who</th><th class="num">Visits</th><th>First seen</th>
-            <th>Last seen</th><th>Device</th><th>Came from</th></tr></thead>
+        <thead><tr><th>Who</th><th>Location</th><th class="num">Visits</th>
+            <th>First seen</th><th>Last seen</th><th>Device</th><th>Came from</th></tr></thead>
         <tbody>${(d.visitors || []).map((v) => `
             <tr><td>${v.tag ? `<strong>${esc(v.tag)}</strong>` : `<span class="mono">${esc(String(v.visitor_id).slice(0, 8))}</span>`}</td>
+                <td>${v.country ? esc(flag(v.country_code) + countryName(v.country, v.country_code)) : '<span class="src-note">not known</span>'}</td>
                 <td class="num">${fmt(v.visits)}</td>
                 <td>${when(v.first_seen)}</td>
                 <td>${when(v.last_seen)}</td>
                 <td>${esc(shortUA(v.user_agent))}</td>
                 <td class="src-note">${esc(v.referrer || '')}</td></tr>`).join('')
-            || `<tr><td colspan="6" class="empty">Nobody has opened the portal yet.</td></tr>`}
+            || `<tr><td colspan="7" class="empty">Nobody has opened the portal yet.</td></tr>`}
         </tbody>`;
 }
 

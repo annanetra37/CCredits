@@ -40,6 +40,44 @@ def _salt() -> str:
     return row["txt"] if row else value
 
 
+# The country database is bundled with the package and consulted in-process:
+# no request leaves this deployment to resolve a location. It costs about 50 MB
+# resident, so it is loaded on the first visit rather than at import.
+_geo = None
+_geo_failed = False
+
+
+def _country(address: str | None) -> tuple[str | None, str | None]:
+    """Resolve an address to a country, then forget the address.
+
+    Country is as far as an offline database can go honestly, and it is the
+    level that answers "where did they open it from" without turning a visit
+    log into a location history.
+    """
+    global _geo, _geo_failed
+    if not address or _geo_failed:
+        return None, None
+    if _geo is None:
+        try:
+            from geoip2fast import GeoIP2Fast
+            _geo = GeoIP2Fast(geoip2fast_data_file="geoip2fast-ipv6.dat.gz")
+        except Exception:
+            _geo_failed = True
+            log.warning("no country database available; visits will have no location")
+            return None, None
+    try:
+        found = _geo.lookup(address)
+    except Exception:
+        return None, None
+    code = (found.country_code or "").strip()
+    name = (found.country_name or "").strip()
+    # Private and loopback ranges resolve to placeholder names; they are not
+    # a location and should not be shown as one.
+    if not code or code in {"--", "??"}:
+        return None, None
+    return code, name or code
+
+
 def hash_ip(address: str | None) -> str | None:
     if not address:
         return None
@@ -66,11 +104,22 @@ def record(request, response) -> None:
         address = forwarded.split(",")[0].strip() or (
             request.client.host if request.client else None
         )
+        # A CDN in front of the app often knows the country already and is more
+        # reliable than a database lookup through a proxy chain.
+        header_code = (request.headers.get("cf-ipcountry")
+                       or request.headers.get("x-vercel-ip-country")
+                       or request.headers.get("x-country-code") or "").strip().upper()
+        code, country = _country(address)
+        if header_code and header_code not in {"XX", "T1"}:
+            code = header_code
+            country = country or header_code
         with connection() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO ops.visit (visitor_id, tag, path, referrer, user_agent, ip_hash)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO ops.visit
+                    (visitor_id, tag, path, referrer, user_agent, ip_hash,
+                     country_code, country)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     visitor,
@@ -79,6 +128,8 @@ def record(request, response) -> None:
                     (request.headers.get("referer") or None) and request.headers["referer"][:300],
                     (request.headers.get("user-agent") or None) and request.headers["user-agent"][:300],
                     hash_ip(address),
+                    code,
+                    country,
                 ),
             )
             conn.commit()
