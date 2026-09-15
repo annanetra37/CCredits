@@ -209,6 +209,9 @@ th {
 th.sortable { cursor: pointer; user-select: none; transition: color .15s var(--ease); }
 th.sortable:hover { color: var(--accent-ink); }
 th .arrow { color: var(--accent); margin-left: 3px; }
+/* A few headings are a phrase, not a word. They wrap onto two lines rather
+   than pushing the table sideways. */
+th.wrap { white-space: normal; min-width: 104px; max-width: 152px; }
 td { padding: 9px 11px; border-bottom: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
 tbody tr { transition: background .13s var(--ease); }
 tbody tr:hover { background: var(--surface-2); }

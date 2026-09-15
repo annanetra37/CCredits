@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     default_vcu_price: float = Field(default=3.0, alias="DEFAULT_VCU_PRICE_PER_TCO2E")
     price_currency: str = Field(default="USD", alias="PRICE_CURRENCY")
     vcu_price_source: str = Field(
-        default="Indicative pilot pricing, conservative end of the VCU range",
+        default="Indicative pilot pricing, conservative end of the voluntary carbon market range",
         alias="VCU_PRICE_SOURCE",
     )
 

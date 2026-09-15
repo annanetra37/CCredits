@@ -75,14 +75,22 @@ function drawFlow(d) {
         return;
     }
     const green = token('--eligible'), accent = token('--accent'), violet = token('--pregrid');
-    const box = (x, w, fill, stroke, title, value, sub) => `
+    // SVG text does not wrap, so a long caption is given as two lines.
+    const box = (x, w, fill, stroke, title, value, sub) => {
+        const lines = Array.isArray(title) ? title : [title];
+        const top = lines.length > 1 ? 94 : 100;
+        return `
         <g class="flow-node">
-            <rect x="${x}" y="70" width="${w}" height="110" rx="14" fill="${fill}"
+            <rect x="${x}" y="64" width="${w}" height="122" rx="14" fill="${fill}"
                   stroke="${stroke}" stroke-width="1.5"/>
-            <text x="${x + w / 2}" y="100" text-anchor="middle" class="flow-cap">${title}</text>
-            <text x="${x + w / 2}" y="137" text-anchor="middle" class="flow-big">${value}</text>
-            <text x="${x + w / 2}" y="160" text-anchor="middle" class="flow-sub">${sub}</text>
+            ${lines.map((l, i) => `<text x="${x + w / 2}" y="${top + i * 14}"
+                 text-anchor="middle" class="flow-cap">${l}</text>`).join('')}
+            <text x="${x + w / 2}" y="${top + lines.length * 14 + 26}" text-anchor="middle"
+                  class="flow-big">${value}</text>
+            <text x="${x + w / 2}" y="${top + lines.length * 14 + 48}" text-anchor="middle"
+                  class="flow-sub">${sub}</text>
         </g>`;
+    };
     const arrow = (x, label) => `
         <g>
             <path d="M${x},125 L${x + 58},125" stroke="${token('--ink-3')}" stroke-width="2"
@@ -94,14 +102,14 @@ function drawFlow(d) {
     svg.innerHTML = `
         <defs><marker id="arrowhead" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
                       orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="${token('--ink-3')}"/></marker></defs>
-        ${box(40, 270, token('--accent-wash'), accent, 'ENERGY GENERATED',
+        ${box(36, 262, token('--accent-wash'), accent, 'ENERGY GENERATED',
               fmt(d.generation_kwh) + ' kWh', fmt(d.generation_mwh, 1) + ' MWh')}
-        ${arrow(318, ef)}
-        ${box(385, 260, token('--violet-wash'), violet, 'EMISSION REDUCTION',
+        ${arrow(310, ef)}
+        ${box(372, 250, token('--violet-wash'), violet, 'EMISSION REDUCTION',
               d.net_reduction_tco2e === null ? '' : fmt(d.net_reduction_tco2e, 2),
               'tonnes of CO₂ avoided')}
-        ${arrow(655, '1 : 1')}
-        ${box(725, 235, token('--eligible-wash'), green, 'CREDITS (VCUS)',
+        ${arrow(640, '1 : 1')}
+        ${box(700, 268, token('--eligible-wash'), green, ['Projected VCU potential,', 'pre-validation'],
               fmt(d.vcu_issued, 2), `${esc(d.currency)} ${fmt(d.total_revenue, 0)} indicative`)}`;
     svg.querySelectorAll('.flow-node').forEach((g) => { g.onclick = () => openMonths(); });
 }
@@ -131,8 +139,8 @@ async function loadOverview() {
          'everything the sites produced', 'screen:energy'],
         ['CO₂ avoided', summary.net_reduction_tco2e === null ? '' : fmt(summary.net_reduction_tco2e, 2), 'tonnes',
          'energy × the Armenian grid factor', 'months'],
-        ['Credits earned', fmt(summary.vcu_issued, 2), 'VCUs',
-         'one tonne avoided is one credit', 'months'],
+        [VCU_LABEL, fmt(summary.vcu_issued, 2), '',
+         'one tonne avoided is one unit of potential', 'months'],
         [`Indicative value`, `${cur} ${fmt(summary.total_revenue, 0)}`, '',
          `at ${cur} ${fmt(calc.vcu_price_per_tco2e, 0)} per tonne`, 'screen:ledger'],
     ].map(([label, value, unit, foot, go], i) => `
@@ -168,7 +176,7 @@ async function loadOverview() {
     el('monthsTable').innerHTML = `
         <thead><tr>
             <th>Month</th><th class="num">Generated kWh</th>
-            <th class="num">tCO₂e</th><th class="num">VCU</th><th class="num">Revenue</th>
+            <th class="num">tCO₂e</th><th class="num wrap">${VCU_SHORT}</th><th class="num">Revenue</th>
         </tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
@@ -226,17 +234,17 @@ function renderContext() {
         <div class="input-card">
             <div class="input-head">
                 <div>
-                    <div class="input-label">VCU price</div>
+                    <div class="input-label">Price per tonne</div>
                     <div class="input-value">${esc(String(Number(price.value)))}
                         <span class="input-unit">${esc(price.currency)} per tonne</span></div>
                 </div>
                 <span class="pill grey">indicative</span>
             </div>
-            <div class="input-why">One VCU is one tonne of CO₂ avoided. This is what a tonne is
-                assumed to sell for, and it only affects the revenue figure, never the number
-                of credits.</div>
+            <div class="input-why">One unit of ${VCU_SHORT} corresponds to one tonne of
+                CO₂ avoided. This is what a tonne is assumed to sell for. It affects the
+                indicative value only, never the quantity.</div>
             <div class="input-src">${esc(price.source || '')} · as of ${esc(price.as_of)}</div>
-        </div>` : `<div class="empty">No VCU price set, so no revenue is shown.</div>`;
+        </div>` : `<div class="empty">No price set, so no indicative value is shown.</div>`;
 
     const otherBlock = others.length ? `
         <details class="more">
@@ -347,7 +355,7 @@ function renderFleetKpis() {
         ['Sites', fmt(fleetRows.length), '', `${fmt(regions)} province(s)`],
         ['Installed capacity', fmt(kwp, 0), 'kWp', 'total across the fleet'],
         ['Energy generated', fmt(kwh), 'kWh', 'everything these sites produced'],
-        ['Credits earned', fmt(vcu, 2), 'VCUs', 'one tonne avoided is one credit'],
+        [VCU_LABEL, fmt(vcu, 2), '', 'one tonne avoided is one unit of potential'],
     ].map(([label, value, unit, foot], i) => `
         <div class="kpi-card" style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
             <div class="label">${label}</div>
@@ -360,11 +368,12 @@ function renderFleet() {
     const cols = [
         ['site', 'Site', 'text'],
         ['region', 'Region', 'text'],
-        ['installed_kwp', 'kWp', 'num1'],
+        ['installed_kwp', 'kWp', 'num'],
         ['grid_connection_date', 'Grid connection', 'text'],
         ['generation_kwh', 'Total kWh', 'num'],
-        ['specific_yield_per_day', 'kWh/kWp/day', 'num2'],
-        ['vcu_issued', 'VCU', 'num'],
+        ['specific_yield_per_day', 'kWh/kWp/day', 'num'],
+        // A phrase, not a word: it wraps rather than widening the table.
+        ['vcu_issued', VCU_SHORT, 'num wrap'],
     ];
     if (CONTEXT && !CONTEXT.real_names) {
         el('privacyNote').innerHTML = 'Sites are shown by code rather than by client name. '
@@ -380,7 +389,7 @@ function renderFleet() {
 
     el('fleetTable').innerHTML = `
         <thead><tr>${cols.map(([k, label, type]) => `
-            <th class="sortable ${type === 'text' ? '' : 'num'}" data-key="${k}">${label}
+            <th class="sortable ${type === 'text' ? '' : type}" data-key="${k}">${label}
                 <span class="arrow">${fleetSort.key === k ? (fleetSort.dir > 0 ? '▲' : '▼') : ''}</span></th>`).join('')}
             <th class="num">Days</th><th>Status</th></tr></thead>
         <tbody>${rows.map((r) => `
@@ -439,7 +448,7 @@ async function openMonths() {
         <p class="sub">Every month in the loaded window. Click one to see the sites inside it.</p>
         <div class="scroll"><table>
         <thead><tr><th>Month</th><th class="num">Generated kWh</th><th class="num">tCO₂e</th>
-            <th class="num">VCU</th></tr></thead>
+            <th class="num wrap">${VCU_SHORT}</th></tr></thead>
         <tbody>${months.map((m) => `
             <tr class="clickable" data-month="${m.month}">
                 <td>${monthName(m.month)}</td><td class="num">${fmt(m.generation_kwh)}</td>
@@ -459,7 +468,7 @@ async function openSites(month) {
         <p class="sub">Sites contributing to ${esc(monthName(month))}. Click one to see its days.</p>
         <div class="scroll"><table>
         <thead><tr><th>Site</th><th class="num">Generated kWh</th><th class="num">tCO₂e</th>
-            <th class="num">VCU</th><th class="num">Days</th></tr></thead>
+            <th class="num wrap">${VCU_SHORT}</th><th class="num">Days</th></tr></thead>
         <tbody>${sites.map((s) => `
             <tr class="clickable" data-site="${esc(s.site_code)}">
                 <td><strong>${esc(s.site)}</strong>${s.region ? ` <span class="src-note">${esc(s.region)}</span>` : ''}</td>
@@ -537,6 +546,12 @@ let MAP = null, activeRegion = '';
 
 // Province names as the address column writes them, mapped to the boundary
 // file's spelling. Armenian place names transliterate several ways.
+// What these figures are: a projection from metered generation, not credits
+// anyone has issued. Named once so the portal cannot drift into calling them
+// something stronger in one place than another.
+const VCU_LABEL = 'Projected VCU potential, pre-validation';
+const VCU_SHORT = 'Projected VCU potential';
+
 const REGION_ALIASES = {
     'erevan': 'Yerevan', 'yerevan': 'Yerevan', 'jerevan': 'Yerevan',
     'vayots dzor': 'Vayots Dzor', "vayots' dzor": 'Vayots Dzor', 'vayotsdzor': 'Vayots Dzor',
@@ -596,7 +611,7 @@ async function drawMap() {
 
     el('regionTable').innerHTML = `
         <thead><tr><th>Province</th><th class="num">Generated kWh</th><th class="num">Sites</th>
-            <th class="num">kWp</th><th class="num">VCU</th></tr></thead>
+            <th class="num">kWp</th><th class="num wrap">${VCU_SHORT}</th></tr></thead>
         <tbody>${rows.map((r) => `
             <tr class="clickable${activeRegion === r.region ? ' row-on' : ''}" data-region="${esc(r.region)}">
                 <td><strong>${esc(r.region)}</strong></td>
@@ -637,7 +652,7 @@ async function loadLedger() {
         ['installed_kwp', 'kWp', 1], ['days_with_data', 'Days', 0],
         ['generation_kwh', 'Generated kWh', 1], ['generation_mwh', 'MWh', 3],
         ['emission_factor', 'Factor', 4], ['net_reduction_tco2e', 'tCO₂e', 4],
-        ['vcu_issued', 'VCU', 4], ['vcu_price_per_tco2e', 'Price', 2],
+        ['vcu_issued', VCU_SHORT, 4], ['vcu_price_per_tco2e', 'Price', 2],
         ['total_revenue', 'Revenue', 2],
     ];
     el('ledgerTable').innerHTML = `
