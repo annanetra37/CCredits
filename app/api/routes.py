@@ -452,20 +452,46 @@ def ledger_csv(site: str | None = None, month: dt.date | None = None) -> Streami
     )
 
 
-# --- Reconciliation --------------------------------------------------------
+# --- Who has opened the portal ---------------------------------------------
 
-@router.get("/reconcile")
-def reconcile(verbose: bool = False) -> dict:
-    from dataclasses import asdict
-    import cli.reconcile as rec
-
-    results = rec.run(verbose)
+@router.get("/visitors")
+def visitors(limit: int = Query(50, le=500)) -> dict:
+    """Self-hosted visit data. No third-party script; nothing leaves this box."""
+    totals = query_one(
+        """
+        SELECT COUNT(*)                     AS visits,
+               COUNT(DISTINCT visitor_id)   AS people,
+               MIN(seen_at)                 AS first_seen,
+               MAX(seen_at)                 AS last_seen,
+               COUNT(*) FILTER (WHERE seen_at > now() - interval '7 days')  AS visits_7d,
+               COUNT(DISTINCT visitor_id) FILTER (WHERE seen_at > now() - interval '7 days')
+                                            AS people_7d
+        FROM ops.visit
+        """
+    ) or {}
     return {
-        "ok": not any(r.status == "fail" for r in results),
-        "passed": sum(1 for r in results if r.status == "pass"),
-        "failed": sum(1 for r in results if r.status == "fail"),
-        "skipped": sum(1 for r in results if r.status == "skip"),
-        "checks": [asdict(r) for r in results],
+        "enabled": settings.track_visits,
+        **totals,
+        "links": query(
+            "SELECT tag, people, visits, first_opened, last_opened FROM ops.link "
+            "ORDER BY last_opened DESC"
+        ),
+        # Named "visitors", not "people": the totals above already use that key
+        # for a count, and one of them would have silently overwritten the other.
+        "visitors": query(
+            "SELECT visitor_id, tag, visits, first_seen, last_seen, user_agent, referrer "
+            "FROM ops.visitor ORDER BY last_seen DESC LIMIT %s",
+            (limit,),
+        ),
+        "by_day": query(
+            """
+            SELECT seen_at::date AS day, COUNT(*) AS visits,
+                   COUNT(DISTINCT visitor_id) AS people
+            FROM ops.visit
+            WHERE seen_at > now() - interval '30 days'
+            GROUP BY 1 ORDER BY 1
+            """
+        ),
     }
 
 

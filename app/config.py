@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     fleet_name: str = Field(default="SANNOVA", alias="FLEET_NAME")
     # Sites are shown by pseudonym by default; client names are not disclosed.
     show_real_site_names: bool = Field(default=False, alias="SHOW_REAL_SITE_NAMES")
+    # Record who opens the portal. First-party only: no third-party script and
+    # nothing leaves this database. Set false to record nothing at all.
+    track_visits: bool = Field(default=True, alias="TRACK_VISITS")
 
     @property
     def dsn(self) -> str:

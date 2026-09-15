@@ -58,7 +58,7 @@ document.querySelectorAll('nav button').forEach((b) => {
         b.classList.add('active');
         el('screen-' + b.dataset.screen).classList.add('active');
         if (b.dataset.screen === 'energy') loadEnergy();
-        if (b.dataset.screen === 'ledger') loadLedger();
+        if (b.dataset.screen === 'ledger') { loadLedger(); loadVisitors(); }
         if (b.dataset.screen === 'fleet') loadFleet();
         if (b.dataset.screen === 'upload') loadFiles();
     };
@@ -659,6 +659,73 @@ el('ledgerSite').onchange = () => { ledgerSite = el('ledgerSite').value; loadLed
 el('downloadCsv').onclick = () => {
     window.location = '/api/ledger.csv' + (ledgerSite ? `?site=${encodeURIComponent(ledgerSite)}` : '');
 };
+
+/* --------------------------------------------- Who has opened the portal */
+
+const shortUA = (ua) => {
+    if (!ua) return '';
+    const os = /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android'
+             : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows'
+             : /Linux/.test(ua) ? 'Linux' : '';
+    const br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome'
+             : /Safari\//.test(ua) ? 'Safari' : /Firefox\//.test(ua) ? 'Firefox' : '';
+    return [os, br].filter(Boolean).join(' · ');
+};
+const when = (iso) => iso ? new Date(iso).toLocaleString(undefined,
+    { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+
+async function loadVisitors() {
+    busy('visitorKpis'); busy('linksTable', 5); busy('visitorsTable', 5);
+    let d;
+    try { d = await api('/api/visitors'); }
+    catch (err) {
+        failed('visitorKpis', err); failed('linksTable', err, 5);
+        return failed('visitorsTable', err, 5);
+    }
+    if (!d.enabled) {
+        el('visitorKpis').innerHTML =
+            `<div class="empty">Visit tracking is switched off (TRACK_VISITS=false).</div>`;
+        el('linksTable').innerHTML = ''; el('visitorsTable').innerHTML = '';
+        return;
+    }
+
+    el('visitorKpis').innerHTML = [
+        ['People', fmt(d.people), '', 'distinct browsers that opened it'],
+        ['Visits', fmt(d.visits), '', 'page opens in total'],
+        ['Last 7 days', fmt(d.people_7d), 'people', `${fmt(d.visits_7d)} visits`],
+        ['Last opened', when(d.last_seen) || 'never', '', d.first_seen ? `first ${when(d.first_seen)}` : ''],
+    ].map(([label, value, unit, foot], i) => `
+        <div class="kpi-card" style="--tint:${token(TILE_TINTS[i % TILE_TINTS.length])}">
+            <div class="label">${label}</div>
+            <div class="value" style="font-size:${String(value).length > 9 ? 17 : 27}px">${esc(value)}<span class="unit">${unit}</span></div>
+            <div class="foot">${esc(foot)}</div>
+        </div>`).join('');
+
+    el('linksTable').innerHTML = (d.links || []).length ? `
+        <thead><tr><th>Shared link</th><th class="num">People</th><th class="num">Opens</th>
+            <th>First opened</th><th>Last opened</th></tr></thead>
+        <tbody>${d.links.map((l) => `
+            <tr><td><strong>${esc(l.tag)}</strong></td>
+                <td class="num">${fmt(l.people)}</td>
+                <td class="num">${fmt(l.visits)}</td>
+                <td>${when(l.first_opened)}</td>
+                <td>${when(l.last_opened)}</td></tr>`).join('')}
+        </tbody>` : `<tbody><tr><td class="empty">No labelled links opened yet. Send one as
+            <span class="mono">?from=their-name</span> and it will appear here.</td></tr></tbody>`;
+
+    el('visitorsTable').innerHTML = `
+        <thead><tr><th>Who</th><th class="num">Visits</th><th>First seen</th>
+            <th>Last seen</th><th>Device</th><th>Came from</th></tr></thead>
+        <tbody>${(d.visitors || []).map((v) => `
+            <tr><td>${v.tag ? `<strong>${esc(v.tag)}</strong>` : `<span class="mono">${esc(String(v.visitor_id).slice(0, 8))}</span>`}</td>
+                <td class="num">${fmt(v.visits)}</td>
+                <td>${when(v.first_seen)}</td>
+                <td>${when(v.last_seen)}</td>
+                <td>${esc(shortUA(v.user_agent))}</td>
+                <td class="src-note">${esc(v.referrer || '')}</td></tr>`).join('')
+            || `<tr><td colspan="6" class="empty">Nobody has opened the portal yet.</td></tr>`}
+        </tbody>`;
+}
 
 /* ------------------------------------------------------ 5.1 Upload */
 

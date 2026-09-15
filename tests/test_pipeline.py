@@ -413,3 +413,86 @@ def test_migration_repairs_a_database_seeded_by_an_older_version():
 
     # Exactly one row drives a number.
     assert query_one("SELECT COUNT(*) n FROM gold.emission_factor WHERE active")["n"] == 1
+
+
+# --- Visit tracking ---------------------------------------------------------
+
+def test_a_visit_is_recorded_without_storing_the_address():
+    """Self-hosted counting must not keep the thing it counts people by."""
+    from app import visits
+    from app.db import execute
+
+    execute("DELETE FROM ops.visit")
+
+    class FakeURL:
+        path, scheme = "/", "http"
+
+    class FakeRequest:
+        url = FakeURL()
+        cookies: dict = {}
+        query_params = {"from": "investor-acme"}
+        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1",
+                   "user-agent": "Mozilla/5.0 (Macintosh) Chrome/120"}
+        client = None
+
+    class FakeResponse:
+        def __init__(self):
+            self.cookies = {}
+
+        def set_cookie(self, key, value, **kw):
+            self.cookies[key] = value
+
+    response = FakeResponse()
+    visits.record(FakeRequest(), response)
+
+    row = query_one("SELECT visitor_id, tag, ip_hash, user_agent FROM ops.visit")
+    assert row["tag"] == "investor-acme"
+    # The address is hashed, never stored, and not recoverable from the row.
+    assert row["ip_hash"] and "203.0.113.7" not in row["ip_hash"]
+    assert len(row["ip_hash"]) == 32
+    # A cookie was issued so the same person is recognised next time.
+    assert response.cookies[visits.COOKIE] == row["visitor_id"]
+
+
+def test_the_same_visitor_is_not_counted_as_two_people():
+    from app import visits
+    from app.db import execute
+
+    execute("DELETE FROM ops.visit")
+
+    class FakeURL:
+        path, scheme = "/", "http"
+
+    class FakeRequest:
+        url = FakeURL()
+        cookies = {visits.COOKIE: "same-person"}
+        query_params: dict = {}
+        headers: dict = {}
+        client = None
+
+    class FakeResponse:
+        def set_cookie(self, *a, **kw):
+            raise AssertionError("a returning visitor must not be re-cookied")
+
+    visits.record(FakeRequest(), FakeResponse())
+    visits.record(FakeRequest(), FakeResponse())
+    summary = query_one(
+        "SELECT COUNT(*) visits, COUNT(DISTINCT visitor_id) people FROM ops.visit"
+    )
+    assert summary["visits"] == 2
+    assert summary["people"] == 1
+
+
+def test_tracking_can_be_switched_off_entirely():
+    from app import visits
+    from app.config import settings as cfg
+    from app.db import execute
+
+    execute("DELETE FROM ops.visit")
+    original = cfg.track_visits
+    cfg.track_visits = False
+    try:
+        visits.record(object(), object())   # must not even look at them
+    finally:
+        cfg.track_visits = original
+    assert query_one("SELECT COUNT(*) n FROM ops.visit")["n"] == 0
