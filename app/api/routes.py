@@ -37,7 +37,7 @@ def _factor_note(row: dict) -> str | None:
     """
     if row.get("emission_factor") is None:
         return ("No emission factor is on file, so no emission reduction and no "
-                "VCUs are claimed. Nothing stands in for it.")
+                "projected VCU potential is claimed. Nothing stands in for it.")
     if not row.get("factor_verified"):
         return ("This factor has not been checked against its source document. "
                 "Set EMISSION_FACTOR_VERIFIED_BY to record who did.")
@@ -406,19 +406,19 @@ def calculation(month: dt.date | None = None) -> dict:
                 "warning": _factor_note({**factor, **totals}),
             },
             {
-                "label": "VCUs",
+                "label": "Projected VCU potential, pre-validation",
                 "formula": "one tonne avoided is one unit",
                 "substituted": f"{float(totals.get('net_reduction_tco2e') or 0):,.3f} tCO₂e",
-                "result": f"{float(totals.get('vcu_issued') or 0):,.3f} VCU",
+                "result": f"{float(totals.get('vcu_issued') or 0):,.3f} units",
                 "source": "gold.vcu",
             },
             {
                 "label": "Indicative revenue",
-                "formula": "VCUs × price per tonne",
+                "formula": "Projected VCU potential × price per tonne",
                 "substituted": (
                     f"{float(totals.get('vcu_issued') or 0):,.3f} × {float(totals.get('vcu_price_per_tco2e')):g}"
                     if totals.get("vcu_price_per_tco2e") is not None
-                    else "no VCU price set"),
+                    else "no price set"),
                 "result": (f"{cur} {float(totals.get('total_revenue') or 0):,.2f}"
                            if totals.get("vcu_price_per_tco2e") is not None else "not calculable"),
                 "source": "gold.revenue",

@@ -126,8 +126,18 @@ UPDATE gold.price
 --    touching a price an operator entered deliberately.
 UPDATE gold.price
    SET value = 3.00,
-       source = 'Indicative pilot pricing — conservative end of the VCU range'
+       source = 'Indicative pilot pricing, conservative end of the voluntary carbon market range'
  WHERE instrument = 'vcu' AND source = 'Indicative pilot pricing';
+
+-- 8. The placeholder price source named the instrument as a plain "VCU". The
+--    portal now calls every such figure a projected VCU potential, pre-
+--    validation, so the seeded source text is brought in line. Only our own
+--    placeholder wordings are matched; an operator's own text is left alone.
+UPDATE gold.price
+   SET source = 'Indicative pilot pricing, conservative end of the voluntary carbon market range'
+ WHERE instrument = 'vcu'
+   AND source IN ('Indicative pilot pricing, conservative end of the VCU range',
+                  'Indicative pilot pricing — conservative end of the VCU range');
 
 -- 4.1 The emission factor that applies to a month. A plain date join: the
 -- active factor whose applied window covers the month. Where that window runs
