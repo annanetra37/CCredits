@@ -49,17 +49,34 @@ def execute(sql: str, params: Any = None) -> None:
         cur.execute(sql, params)
 
 
+# The outcome of the last migration, so a failure is visible rather than
+# leaving the app running against a half-applied schema and reporting itself
+# healthy. Startup deliberately does not crash on a migration error — a
+# database that is briefly unreachable should not crash-loop the service — so
+# something has to carry the bad news, and /api/health does.
+LAST_MIGRATION: dict = {"ok": None, "error": None, "file": None}
+
+
 def migrate() -> None:
     """Apply the schema files in order. They are all idempotent."""
     files = sorted(SQL_DIR.glob("*.sql"))
-    with connection() as conn:
-        for path in files:
-            log.info("applying %s", path.name)
-            with conn.cursor() as cur:
-                cur.execute(path.read_text())
-        conn.commit()
-    sync_parameters()
-    seed_reference_data()
+    current = None
+    try:
+        with connection() as conn:
+            for path in files:
+                current = path.name
+                log.info("applying %s", path.name)
+                with conn.cursor() as cur:
+                    cur.execute(path.read_text())
+            conn.commit()
+        sync_parameters()
+        seed_reference_data()
+    except Exception as exc:
+        LAST_MIGRATION.update(
+            {"ok": False, "file": current, "error": f"{type(exc).__name__}: {exc}"}
+        )
+        raise
+    LAST_MIGRATION.update({"ok": True, "file": None, "error": None})
 
 
 def sync_parameters() -> None:

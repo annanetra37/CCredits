@@ -543,3 +543,69 @@ def test_a_country_header_from_a_cdn_wins_over_the_lookup():
     row = query_one("SELECT country_code, country FROM ops.visit")
     assert row["country_code"] == "AM"          # the header, not the 8.8.8.8 lookup
     assert row["country"] == "United States"    # name from the lookup is kept
+
+
+def test_a_database_from_the_previous_version_migrates_cleanly():
+    """A view that gains a column cannot be replaced in place, and a column
+    must exist before a view selects it. Both broke the ops schema in a
+    deployment that already had visit data, and the failure surfaced only as a
+    500 on one screen."""
+    from app.db import migrate
+
+    with connection() as conn, conn.cursor() as cur:
+        # Put ops back the way the previous version left it: no country, and a
+        # view compiled without those columns.
+        cur.execute("DROP VIEW IF EXISTS ops.visitor CASCADE")
+        cur.execute("DROP VIEW IF EXISTS ops.location CASCADE")
+        cur.execute("ALTER TABLE ops.visit DROP COLUMN IF EXISTS country")
+        cur.execute("ALTER TABLE ops.visit DROP COLUMN IF EXISTS country_code")
+        cur.execute(
+            """
+            CREATE VIEW ops.visitor AS
+            SELECT visitor_id,
+                   MAX(tag) FILTER (WHERE tag IS NOT NULL) AS tag,
+                   COUNT(*) AS visits, MIN(seen_at) AS first_seen,
+                   MAX(seen_at) AS last_seen, MAX(user_agent) AS user_agent,
+                   MAX(referrer) FILTER (WHERE referrer IS NOT NULL) AS referrer
+            FROM ops.visit GROUP BY visitor_id
+            """
+        )
+        cur.execute(
+            "INSERT INTO ops.visit (visitor_id, tag) VALUES ('legacy', 'investor-acme')"
+        )
+        conn.commit()
+
+    migrate()
+
+    columns = {
+        r["column_name"] for r in query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'ops' AND table_name = 'visitor'"
+        )
+    }
+    assert {"country", "country_code"} <= columns
+    # And the row that was already there survives.
+    assert query_one("SELECT COUNT(*) n FROM ops.visit WHERE visitor_id = 'legacy'")["n"] == 1
+    assert query_one("SELECT tag FROM ops.visitor WHERE visitor_id = 'legacy'")["tag"] \
+        == "investor-acme"
+
+
+def test_a_half_applied_schema_does_not_report_itself_healthy():
+    """Startup does not crash on a migration error, so health has to say so;
+    otherwise the only symptom is a 500 on whichever screen needs the new
+    column, which is what happened."""
+    import app.db as db
+    from app.api.routes import health
+
+    saved = dict(db.LAST_MIGRATION)
+    try:
+        db.LAST_MIGRATION.update(
+            {"ok": False, "file": "004_ops.sql", "error": "UndefinedColumn: nope"}
+        )
+        result = health()
+        assert result["status"] == "degraded"
+        assert "004_ops.sql" in result["detail"]
+    finally:
+        db.LAST_MIGRATION.update(saved)
+
+    assert health()["status"] == "ok"
