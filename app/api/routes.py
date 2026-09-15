@@ -479,9 +479,13 @@ def visitors(limit: int = Query(50, le=500)) -> dict:
         # Named "visitors", not "people": the totals above already use that key
         # for a count, and one of them would have silently overwritten the other.
         "visitors": query(
-            "SELECT visitor_id, tag, visits, first_seen, last_seen, user_agent, referrer "
+            "SELECT visitor_id, tag, visits, first_seen, last_seen, user_agent, "
+            "referrer, country, country_code "
             "FROM ops.visitor ORDER BY last_seen DESC LIMIT %s",
             (limit,),
+        ),
+        "locations": query(
+            "SELECT country, country_code, people, visits, last_seen FROM ops.location"
         ),
         "by_day": query(
             """

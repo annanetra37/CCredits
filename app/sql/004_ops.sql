@@ -17,7 +17,12 @@ CREATE TABLE IF NOT EXISTS ops.visit (
     path        text,
     referrer    text,
     user_agent  text,
-    ip_hash     text                    -- salted hash; the address itself is not kept
+    ip_hash     text,                   -- salted hash; the address itself is not kept
+    -- Resolved from the address at the moment of the visit, then the address
+    -- is discarded. Country level only: that is what an offline database can
+    -- answer honestly, and it is enough to say where someone opened the link.
+    country_code text,
+    country      text
 );
 
 CREATE INDEX IF NOT EXISTS visit_seen_idx    ON ops.visit (seen_at DESC);
@@ -32,7 +37,9 @@ SELECT visitor_id,
        MIN(seen_at)                            AS first_seen,
        MAX(seen_at)                            AS last_seen,
        MAX(user_agent)                         AS user_agent,
-       MAX(referrer) FILTER (WHERE referrer IS NOT NULL) AS referrer
+       MAX(referrer) FILTER (WHERE referrer IS NOT NULL) AS referrer,
+       MAX(country) FILTER (WHERE country IS NOT NULL)    AS country,
+       MAX(country_code) FILTER (WHERE country_code IS NOT NULL) AS country_code
 FROM ops.visit
 GROUP BY visitor_id;
 
@@ -46,3 +53,17 @@ SELECT tag,
 FROM ops.visit
 WHERE tag IS NOT NULL
 GROUP BY tag;
+
+ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country_code text;
+ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country      text;
+
+-- Where people opened it from.
+CREATE OR REPLACE VIEW ops.location AS
+SELECT COALESCE(country, 'Unknown')      AS country,
+       MAX(country_code)                 AS country_code,
+       COUNT(DISTINCT visitor_id)        AS people,
+       COUNT(*)                          AS visits,
+       MAX(seen_at)                      AS last_seen
+FROM ops.visit
+GROUP BY COALESCE(country, 'Unknown')
+ORDER BY people DESC, visits DESC;
