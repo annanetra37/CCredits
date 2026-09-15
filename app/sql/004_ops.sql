@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS ops.visit (
     country      text
 );
 
+-- Added here, before anything selects them: a table created by an earlier
+-- version has neither column, and the views below would fail to compile.
+ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country_code text;
+ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country      text;
+
 CREATE INDEX IF NOT EXISTS visit_seen_idx    ON ops.visit (seen_at DESC);
 CREATE INDEX IF NOT EXISTS visit_visitor_idx ON ops.visit (visitor_id);
 CREATE INDEX IF NOT EXISTS visit_tag_idx     ON ops.visit (tag);
@@ -54,8 +59,6 @@ FROM ops.visit
 WHERE tag IS NOT NULL
 GROUP BY tag;
 
-ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country_code text;
-ALTER TABLE ops.visit ADD COLUMN IF NOT EXISTS country      text;
 
 -- Where people opened it from.
 CREATE OR REPLACE VIEW ops.location AS

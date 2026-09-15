@@ -59,10 +59,22 @@ def _plant_for(site_code: str) -> str:
 
 @router.get("/health")
 def health() -> dict:
+    from app.db import LAST_MIGRATION
+
     try:
         query_one("SELECT 1 AS ok")
     except Exception as exc:
         return {"status": "degraded", "database": False, "detail": str(exc)}
+    if LAST_MIGRATION.get("ok") is False:
+        # Reachable but running on a schema that did not fully apply, which is
+        # exactly the state that produces a 500 on one screen and nowhere else.
+        return {
+            "status": "degraded",
+            "database": True,
+            "env": settings.app_env,
+            "detail": f"schema did not fully apply at {LAST_MIGRATION.get('file')}: "
+                      f"{LAST_MIGRATION.get('error')}",
+        }
     return {"status": "ok", "database": True, "env": settings.app_env}
 
 
